@@ -42,6 +42,7 @@
 !! \ingroup physics
 !----------------------------------------------------------------------------!
 MODULE physics_eulerisotherm_mod
+  USE logging_base_mod
   USE physics_base_mod
   USE mesh_base_mod
   USE marray_base_mod
@@ -68,17 +69,11 @@ MODULE physics_eulerisotherm_mod
     PROCEDURE :: EnableOutput
     PROCEDURE :: new_statevector
     !------Convert2Primitive-------!
-    PROCEDURE :: Convert2Primitive_new
-    PROCEDURE :: Convert2Primitive_center
-    PROCEDURE :: Convert2Primitive_centsub
-    PROCEDURE :: Convert2Primitive_faces
-    PROCEDURE :: Convert2Primitive_facesub
+    PROCEDURE :: Convert2Primitive_all
+    PROCEDURE :: Convert2Primitive_subset
     !------Convert2Conservative----!
-    PROCEDURE :: Convert2Conservative_new
-    PROCEDURE :: Convert2Conservative_center
-    PROCEDURE :: Convert2Conservative_centsub
-    PROCEDURE :: Convert2Conservative_faces
-    PROCEDURE :: Convert2Conservative_facesub
+    PROCEDURE :: Convert2Conservative_all
+    PROCEDURE :: Convert2Conservative_subset
     !------Soundspeed Routines-----!
     PROCEDURE :: SetSoundSpeeds_center
     PROCEDURE :: SetSoundSpeeds_faces
@@ -89,7 +84,7 @@ MODULE physics_eulerisotherm_mod
     !------Flux Routines-----------!
     PROCEDURE :: CalcFluxesX
     PROCEDURE :: CalcFluxesY
-    PROCEDURE :: CalcFluxesZ       ! empty (fulfill deferred)
+    PROCEDURE :: CalcFluxesZ
     !------Fargo Routines----------!
     PROCEDURE :: AddBackgroundVelocityX
     PROCEDURE :: AddBackgroundVelocityY
@@ -97,12 +92,13 @@ MODULE physics_eulerisotherm_mod
     PROCEDURE :: SubtractBackgroundVelocityX
     PROCEDURE :: SubtractBackgroundVelocityY
     PROCEDURE :: SubtractBackgroundVelocityZ
-    PROCEDURE :: FargoSources
+    PROCEDURE :: AddFargoSources
 
     PROCEDURE :: GeometricalSources
     PROCEDURE :: ExternalSources
+    PROCEDURE :: ViscositySources
 
-    PROCEDURE :: ReflectionMasks                      ! for reflecting boundaries
+    PROCEDURE :: CalcStresses
 !    PROCEDURE :: CalcIntermediateStateX_eulerisotherm    ! for HLLC
 !    PROCEDURE :: CalcIntermediateStateY_eulerisotherm    ! for HLLC
     PROCEDURE :: CalculateCharSystemX           ! for absorbing boundaries
@@ -117,9 +113,8 @@ MODULE physics_eulerisotherm_mod
 !    PROCEDURE :: CalcRiemann2PrimY_eulerisotherm         ! for farfield boundaries
 !    PROCEDURE :: CalcRoeAverages_eulerisotherm           ! for advanced wavespeeds
 !    PROCEDURE :: ExternalSources_eulerisotherm
+    PROCEDURE :: ReflectionMasks                      ! for reflecting boundaries
     PROCEDURE :: AxisMasks
-    PROCEDURE :: ViscositySources
-    PROCEDURE :: CalcStresses_euler
 
     PROCEDURE     :: Finalize
   END TYPE
@@ -210,19 +205,20 @@ CONTAINS
     this%PRESSURE  = 0                                 ! no pressure         !
     this%ENERGY    = 0                                 ! no total energy     !
 
+    ! check which vector components are available and
     ! set names shown in the data file
     next_idx = 2
-    IF (Mesh%INUM.GT.1.OR.Mesh%ROTSYM.EQ.1) THEN
+    IF (BTEST(Mesh%VECTOR_COMPONENTS,0)) THEN
       this%pvarname(next_idx) = "xvelocity"
       this%cvarname(next_idx) = "xmomentum"
       next_idx = next_idx + 1
     END IF
-    IF (Mesh%JNUM.GT.1.OR.Mesh%ROTSYM.EQ.2) THEN
+    IF (BTEST(Mesh%VECTOR_COMPONENTS,1)) THEN
       this%pvarname(next_idx) = "yvelocity"
       this%cvarname(next_idx) = "ymomentum"
       next_idx = next_idx + 1
     END IF
-    IF (Mesh%KNUM.GT.1.OR.Mesh%ROTSYM.EQ.3) THEN
+    IF (BTEST(Mesh%VECTOR_COMPONENTS,2)) THEN
       this%pvarname(next_idx) = "zvelocity"
       this%cvarname(next_idx) = "zmomentum"
     END IF
@@ -238,6 +234,9 @@ CONTAINS
       this%bccsound%data1d(:) = 0.
       this%fcsound%data1d(:)  = 0.
     END IF
+
+    ! enable support for absorbing boundary conditions
+    this%supports_absorbing = .TRUE.
 
     CALL this%EnableOutput(Mesh,config,IO)
   END SUBROUTINE InitPhysics_eulerisotherm
@@ -313,7 +312,7 @@ CONTAINS
   END SUBROUTINE SetSoundSpeeds_faces
   
   !> Converts to primitives at cell centers using state vectors
-  PURE SUBROUTINE Convert2Primitive_new(this,cvar,pvar)
+  PURE SUBROUTINE Convert2Primitive_all(this,cvar,pvar)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
     CLASS(physics_eulerisotherm), INTENT(IN) :: this
@@ -344,122 +343,84 @@ CONTAINS
         END IF
       END SELECT
     END SELECT
-  END SUBROUTINE Convert2Primitive_new
+  END SUBROUTINE Convert2Primitive_all
 
-  !> Converts to primitives at cell centers
-  PURE SUBROUTINE Convert2Primitive_center(this,Mesh,cvar,pvar)
+  !> Converts to primitives at cell centers using state vectors
+  PURE SUBROUTINE Convert2Primitive_subset(this,i1,i2,j1,j2,k1,k2,cvar,pvar)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
-    CLASS(physics_eulerisotherm), INTENT(IN)  :: this
-    CLASS(mesh_base),         INTENT(IN)  :: Mesh
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM), &
-                              INTENT(IN)  :: cvar
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM), &
-                              INTENT(OUT) :: pvar
+    CLASS(physics_eulerisotherm), INTENT(IN) :: this
+    INTEGER,                      INTENT(IN) :: i1,i2,j1,j2,k1,k2
+    CLASS(marray_compound),    INTENT(INOUT) :: cvar,pvar
     !------------------------------------------------------------------------!
-    CALL this%Convert2Primitive_centsub(Mesh,Mesh%IGMIN,Mesh%IGMAX,&
-         Mesh%JGMIN,Mesh%JGMAX,Mesh%KGMIN,Mesh%KGMAX,cvar,pvar)
-  END SUBROUTINE Convert2Primitive_center
-
-  !> Converts to primitive variables at cell centers
-  PURE SUBROUTINE Convert2Primitive_centsub(this,Mesh,i1,i2,j1,j2,k1,k2,cvar,pvar)
-    IMPLICIT NONE
-    !------------------------------------------------------------------------!
-    CLASS(physics_eulerisotherm), INTENT(IN)  :: this
-    CLASS(mesh_base),         INTENT(IN)  :: Mesh
-    INTEGER,                  INTENT(IN)  :: i1,i2,j1,j2,k1,k2
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM), &
-                              INTENT(IN)  :: cvar
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM), &
-                              INTENT(OUT) :: pvar
-    !------------------------------------------------------------------------!
-    SELECT CASE(this%VDIM)
-    CASE(1) ! 1D velocity / momentum
-      CALL Cons2Prim(cvar(i1:i2,j1:j2,k1:k2,this%DENSITY),   &
-                      cvar(i1:i2,j1:j2,k1:k2,this%XMOMENTUM), &
-                      pvar(i1:i2,j1:j2,k1:k2,this%DENSITY),   &
-                      pvar(i1:i2,j1:j2,k1:k2,this%XVELOCITY) &
-                    )
-    CASE(2) ! 2D velocity / momentum
-      CALL Cons2Prim(cvar(i1:i2,j1:j2,k1:k2,this%DENSITY),   &
-                      cvar(i1:i2,j1:j2,k1:k2,this%XMOMENTUM), &
-                      cvar(i1:i2,j1:j2,k1:k2,this%YMOMENTUM), &
-                      pvar(i1:i2,j1:j2,k1:k2,this%DENSITY),   &
-                      pvar(i1:i2,j1:j2,k1:k2,this%XVELOCITY), &
-                      pvar(i1:i2,j1:j2,k1:k2,this%YVELOCITY) &
-                    )
-    CASE(3) ! 3D velocity / momentum
-      CALL Cons2Prim(cvar(i1:i2,j1:j2,k1:k2,this%DENSITY),   &
-                      cvar(i1:i2,j1:j2,k1:k2,this%XMOMENTUM), &
-                      cvar(i1:i2,j1:j2,k1:k2,this%YMOMENTUM), &
-                      cvar(i1:i2,j1:j2,k1:k2,this%ZMOMENTUM), &
-                      pvar(i1:i2,j1:j2,k1:k2,this%DENSITY),   &
-                      pvar(i1:i2,j1:j2,k1:k2,this%XVELOCITY), &
-                      pvar(i1:i2,j1:j2,k1:k2,this%YVELOCITY), &
-                      pvar(i1:i2,j1:j2,k1:k2,this%ZVELOCITY) &
-                    )
+    SELECT TYPE(c => cvar)
+    TYPE IS (statevector_eulerisotherm)
+      SELECT TYPE(p => pvar)
+      TYPE IS (statevector_eulerisotherm)
+        IF (c%flavour.EQ.CONSERVATIVE.AND.p%flavour.EQ.PRIMITIVE) THEN
+          SELECT CASE (c%density%RANK)
+          CASE(0) ! state vector contains cell center values
+            ! perform the transformation depending on dimensionality
+            SELECT CASE(this%VDIM)
+            CASE(1) ! 1D velocity / momentum
+              CALL Cons2Prim(c%density%data3d(i1:i2,j1:j2,k1:k2), &
+                            c%momentum%data4d(i1:i2,j1:j2,k1:k2,1), &
+                            p%density%data3d(i1:i2,j1:j2,k1:k2), &
+                            p%velocity%data4d(i1:i2,j1:j2,k1:k2,1))
+            CASE(2) ! 2D velocity / momentum
+              CALL Cons2Prim(c%density%data3d(i1:i2,j1:j2,k1:k2), &
+                            c%momentum%data4d(i1:i2,j1:j2,k1:k2,1), &
+                            c%momentum%data4d(i1:i2,j1:j2,k1:k2,2), &
+                            p%density%data3d(i1:i2,j1:j2,k1:k2), &
+                            p%velocity%data4d(i1:i2,j1:j2,k1:k2,1), &
+                            p%velocity%data4d(i1:i2,j1:j2,k1:k2,2))
+            CASE(3) ! 3D velocity / momentum
+              CALL Cons2Prim(c%density%data3d(i1:i2,j1:j2,k1:k2), &
+                            c%momentum%data4d(i1:i2,j1:j2,k1:k2,1), &
+                            c%momentum%data4d(i1:i2,j1:j2,k1:k2,2), &
+                            c%momentum%data4d(i1:i2,j1:j2,k1:k2,3), &
+                            p%density%data3d(i1:i2,j1:j2,k1:k2), &
+                            p%velocity%data4d(i1:i2,j1:j2,k1:k2,1), &
+                            p%velocity%data4d(i1:i2,j1:j2,k1:k2,2), &
+                            p%velocity%data4d(i1:i2,j1:j2,k1:k2,3))
+            END SELECT
+          CASE(1) ! state vector contains cell face / corner values
+            ! perform the transformation depending on dimensionality
+            SELECT CASE(this%VDIM)
+            CASE(1) ! 1D velocity / momentum
+              CALL Cons2Prim(c%density%data4d(i1:i2,j1:j2,k1:k2,:), &
+                            c%momentum%data5d(i1:i2,j1:j2,k1:k2,:,1), &
+                            p%density%data4d(i1:i2,j1:j2,k1:k2,:), &
+                            p%velocity%data5d(i1:i2,j1:j2,k1:k2,:,1))
+            CASE(2) ! 2D velocity / momentum
+              CALL Cons2Prim(c%density%data4d(i1:i2,j1:j2,k1:k2,:), &
+                            c%momentum%data5d(i1:i2,j1:j2,k1:k2,:,1), &
+                            c%momentum%data5d(i1:i2,j1:j2,k1:k2,:,2), &
+                            p%density%data4d(i1:i2,j1:j2,k1:k2,:), &
+                            p%velocity%data5d(i1:i2,j1:j2,k1:k2,:,1), &
+                            p%velocity%data5d(i1:i2,j1:j2,k1:k2,:,2))
+            CASE(3) ! 3D velocity / momentum
+              CALL Cons2Prim(c%density%data4d(i1:i2,j1:j2,k1:k2,:), &
+                            c%momentum%data5d(i1:i2,j1:j2,k1:k2,:,1), &
+                            c%momentum%data5d(i1:i2,j1:j2,k1:k2,:,2), &
+                            c%momentum%data5d(i1:i2,j1:j2,k1:k2,:,3), &
+                            p%density%data4d(i1:i2,j1:j2,k1:k2,:), &
+                            p%velocity%data5d(i1:i2,j1:j2,k1:k2,:,1), &
+                            p%velocity%data5d(i1:i2,j1:j2,k1:k2,:,2), &
+                            p%velocity%data5d(i1:i2,j1:j2,k1:k2,:,3))
+            END SELECT
+          CASE DEFAULT
+            ! do nothing
+          END SELECT
+        ELSE
+          ! do nothing
+        END IF
+      END SELECT
     END SELECT
-  END SUBROUTINE Convert2Primitive_centsub
+  END SUBROUTINE Convert2Primitive_subset
 
-  !> Converts to conservative variables at faces
-  PURE SUBROUTINE Convert2Primitive_faces(this,Mesh,cons,prim)
-    IMPLICIT NONE
-    !------------------------------------------------------------------------!
-    CLASS(physics_eulerisotherm), INTENT(IN)  :: this
-    CLASS(mesh_base),         INTENT(IN)  :: Mesh
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%NFACES,this%VNUM), &
-                              INTENT(IN)  :: cons
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%NFACES,this%VNUM), &
-                              INTENT(OUT) :: prim
-    !------------------------------------------------------------------------!
-    CALL this%Convert2Primitive_facesub(Mesh,Mesh%IGMIN,Mesh%IGMAX, &
-                                             Mesh%JGMIN,Mesh%JGMAX, &
-                                             Mesh%KGMIN,Mesh%KGMAX, &
-                                        cons,prim)
-  END SUBROUTINE Convert2Primitive_faces
-
-  !> Converts to conservative variables at faces
-  PURE SUBROUTINE Convert2Primitive_facesub(this,Mesh,i1,i2,j1,j2,k1,k2,cons,prim)
-    IMPLICIT NONE
-    !------------------------------------------------------------------------!
-    CLASS(physics_eulerisotherm), INTENT(IN)  :: this
-    CLASS(mesh_base),         INTENT(IN)  :: Mesh
-    INTEGER,                  INTENT(IN)  :: i1,i2,j1,j2,k1,k2
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%NFACES,this%VNUM), &
-                              INTENT(IN)  :: cons
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%NFACES,this%VNUM), &
-                              INTENT(OUT) :: prim
-    !------------------------------------------------------------------------!
-    SELECT CASE(this%VDIM)
-    CASE(1) ! 1D velocity / momentum
-      CALL Cons2Prim(cons(i1:i2,j1:j2,k1:k2,:,this%DENSITY)  , &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%XMOMENTUM), &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%DENSITY)  , &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%XVELOCITY) &
-                    )
-    CASE(2) ! 2D velocity / momentum
-      CALL Cons2Prim(cons(i1:i2,j1:j2,k1:k2,:,this%DENSITY)  , &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%XMOMENTUM), &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%YMOMENTUM), &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%DENSITY)  , &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%XVELOCITY), &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%YVELOCITY) &
-                    )
-    CASE(3) ! 3D velocity / momentum
-      CALL Cons2Prim(cons(i1:i2,j1:j2,k1:k2,:,this%DENSITY)  , &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%XMOMENTUM), &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%YMOMENTUM), &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%ZMOMENTUM), &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%DENSITY)  , &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%XVELOCITY), &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%YVELOCITY), &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%ZVELOCITY) &
-                    )
-    END SELECT
-  END SUBROUTINE Convert2Primitive_facesub
-
-  !> Converts to conservative at cell centers using state vectors
-  PURE SUBROUTINE Convert2Conservative_new(this,pvar,cvar)
+  !> Converts primitive to conservative variables on the whole mesh
+  PURE SUBROUTINE Convert2Conservative_all(this,pvar,cvar)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
     CLASS(physics_eulerisotherm), INTENT(IN) :: this
@@ -490,124 +451,81 @@ CONTAINS
         END IF
       END SELECT
     END SELECT
-  END SUBROUTINE Convert2Conservative_new
+  END SUBROUTINE Convert2Conservative_all
 
-  !> Convert from primtive to conservative variables at cell-centers
-  PURE SUBROUTINE Convert2Conservative_center(this,Mesh,pvar,cvar)
+  !> Converts to primitive to conservative variables on a subset of the data
+  PURE SUBROUTINE Convert2Conservative_subset(this,i1,i2,j1,j2,k1,k2,pvar,cvar)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
-    CLASS(physics_eulerisotherm), INTENT(IN)  :: this
-    CLASS(mesh_base),         INTENT(IN)  :: Mesh
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM), &
-                              INTENT(IN)  :: pvar
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM), &
-                              INTENT(OUT) :: cvar
+    CLASS(physics_eulerisotherm), INTENT(IN) :: this
+    INTEGER,                      INTENT(IN) :: i1,i2,j1,j2,k1,k2
+    CLASS(marray_compound),    INTENT(INOUT) :: pvar,cvar
     !------------------------------------------------------------------------!
-    CALL this%Convert2Conservative_centsub(Mesh,Mesh%IGMIN,Mesh%IGMAX, &
-                                                Mesh%JGMIN,Mesh%JGMAX, &
-                                                Mesh%KGMIN,Mesh%KGMAX, &
-                                           pvar,cvar)
-  END SUBROUTINE Convert2Conservative_center
-
-
-  !> Convert from primtive to conservative variables at cell-centers
-  PURE SUBROUTINE Convert2Conservative_centsub(this,Mesh,i1,i2,j1,j2,k1,k2,pvar,cvar)
-    IMPLICIT NONE
-    !------------------------------------------------------------------------!
-    CLASS(physics_eulerisotherm), INTENT(IN)  :: this
-    CLASS(mesh_base),         INTENT(IN)  :: Mesh
-    INTEGER,                  INTENT(IN)  :: i1,i2,j1,j2,k1,k2
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM), &
-                              INTENT(IN)  :: pvar
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM), &
-                              INTENT(OUT) :: cvar
-    !------------------------------------------------------------------------!
-    SELECT CASE(this%VDIM)
-    CASE(1) ! 1D velocity / momentum
-      CALL Prim2Cons(pvar(i1:i2,j1:j2,k1:k2,this%DENSITY)  , &
-                     pvar(i1:i2,j1:j2,k1:k2,this%XVELOCITY), &
-                     cvar(i1:i2,j1:j2,k1:k2,this%DENSITY)  , &
-                     cvar(i1:i2,j1:j2,k1:k2,this%XMOMENTUM) &
-                    )
-    CASE(2) ! 2D velocity / momentum
-      CALL Prim2Cons(pvar(i1:i2,j1:j2,k1:k2,this%DENSITY)  , &
-                     pvar(i1:i2,j1:j2,k1:k2,this%XVELOCITY), &
-                     pvar(i1:i2,j1:j2,k1:k2,this%YVELOCITY), &
-                     cvar(i1:i2,j1:j2,k1:k2,this%DENSITY)  , &
-                     cvar(i1:i2,j1:j2,k1:k2,this%XMOMENTUM), &
-                     cvar(i1:i2,j1:j2,k1:k2,this%YMOMENTUM) &
-                    )
-    CASE(3) ! 3D velocity / momentum
-      CALL Prim2Cons(pvar(i1:i2,j1:j2,k1:k2,this%DENSITY)  , &
-                     pvar(i1:i2,j1:j2,k1:k2,this%XVELOCITY), &
-                     pvar(i1:i2,j1:j2,k1:k2,this%YVELOCITY), &
-                     pvar(i1:i2,j1:j2,k1:k2,this%ZVELOCITY), &
-                     cvar(i1:i2,j1:j2,k1:k2,this%DENSITY)  , &
-                     cvar(i1:i2,j1:j2,k1:k2,this%XMOMENTUM), &
-                     cvar(i1:i2,j1:j2,k1:k2,this%YMOMENTUM), &
-                     cvar(i1:i2,j1:j2,k1:k2,this%ZMOMENTUM) &
-                    )
+    SELECT TYPE(p => pvar)
+    TYPE IS (statevector_eulerisotherm)
+      SELECT TYPE(c => cvar)
+      TYPE IS (statevector_eulerisotherm)
+        IF (p%flavour.EQ.PRIMITIVE.AND.c%flavour.EQ.CONSERVATIVE) THEN
+          SELECT CASE (p%density%RANK)
+          CASE(0) ! state vector contains cell center values
+            ! perform the transformation depending on dimensionality
+            SELECT CASE(this%VDIM)
+            CASE(1) ! 1D velocity / momentum
+              CALL Prim2Cons(p%density%data3d(i1:i2,j1:j2,k1:k2), &
+                            p%velocity%data4d(i1:i2,j1:j2,k1:k2,1), &
+                            c%density%data3d(i1:i2,j1:j2,k1:k2), &
+                            c%momentum%data4d(i1:i2,j1:j2,k1:k2,1))
+            CASE(2) ! 2D velocity / momentum
+              CALL Prim2Cons(p%density%data3d(i1:i2,j1:j2,k1:k2), &
+                            p%velocity%data4d(i1:i2,j1:j2,k1:k2,1), &
+                            p%velocity%data4d(i1:i2,j1:j2,k1:k2,2), &
+                            c%density%data3d(i1:i2,j1:j2,k1:k2), &
+                            c%momentum%data4d(i1:i2,j1:j2,k1:k2,1), &
+                            c%momentum%data4d(i1:i2,j1:j2,k1:k2,2))
+            CASE(3) ! 3D velocity / momentum
+              CALL Prim2Cons(p%density%data3d(i1:i2,j1:j2,k1:k2), &
+                            p%velocity%data4d(i1:i2,j1:j2,k1:k2,1), &
+                            p%velocity%data4d(i1:i2,j1:j2,k1:k2,2), &
+                            p%velocity%data4d(i1:i2,j1:j2,k1:k2,3), &
+                            c%density%data3d(i1:i2,j1:j2,k1:k2), &
+                            c%momentum%data4d(i1:i2,j1:j2,k1:k2,1), &
+                            c%momentum%data4d(i1:i2,j1:j2,k1:k2,2), &
+                            c%momentum%data4d(i1:i2,j1:j2,k1:k2,3))
+            END SELECT
+          CASE(1) ! state vector contains cell face / corner values
+            ! perform the transformation depending on dimensionality
+            SELECT CASE(this%VDIM)
+            CASE(1) ! 1D velocity / momentum
+              CALL Prim2Cons(p%density%data4d(i1:i2,j1:j2,k1:k2,:), &
+                            p%velocity%data5d(i1:i2,j1:j2,k1:k2,:,1), &
+                            c%density%data4d(i1:i2,j1:j2,k1:k2,:), &
+                            c%momentum%data5d(i1:i2,j1:j2,k1:k2,:,1))
+            CASE(2) ! 2D velocity / momentum
+              CALL Prim2Cons(p%density%data4d(i1:i2,j1:j2,k1:k2,:), &
+                            p%velocity%data5d(i1:i2,j1:j2,k1:k2,:,1), &
+                            p%velocity%data5d(i1:i2,j1:j2,k1:k2,:,2), &
+                            c%density%data4d(i1:i2,j1:j2,k1:k2,:), &
+                            c%momentum%data5d(i1:i2,j1:j2,k1:k2,:,1), &
+                            c%momentum%data5d(i1:i2,j1:j2,k1:k2,:,2))
+            CASE(3) ! 3D velocity / momentum
+              CALL Prim2Cons(p%density%data4d(i1:i2,j1:j2,k1:k2,:), &
+                            p%velocity%data5d(i1:i2,j1:j2,k1:k2,:,1), &
+                            p%velocity%data5d(i1:i2,j1:j2,k1:k2,:,2), &
+                            p%velocity%data5d(i1:i2,j1:j2,k1:k2,:,3), &
+                            c%density%data4d(i1:i2,j1:j2,k1:k2,:), &
+                            c%momentum%data5d(i1:i2,j1:j2,k1:k2,:,1), &
+                            c%momentum%data5d(i1:i2,j1:j2,k1:k2,:,2), &
+                            c%momentum%data5d(i1:i2,j1:j2,k1:k2,:,3))
+            END SELECT
+          CASE DEFAULT
+            ! do nothing
+          END SELECT
+        ELSE
+          ! do nothing
+        END IF
+      END SELECT
     END SELECT
-  END SUBROUTINE Convert2Conservative_centsub
-
-
-  !> Convert to from primitve to conservative variables at cell-faces
-  PURE SUBROUTINE Convert2Conservative_faces(this,Mesh,prim,cons)
-    IMPLICIT NONE
-    !------------------------------------------------------------------------!
-    CLASS(physics_eulerisotherm), INTENT(IN)  :: this
-    CLASS(mesh_base),         INTENT(IN)  :: Mesh
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%NFACES,this%VNUM), &
-                              INTENT(IN)  :: prim
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%NFACES,this%VNUM), &
-                              INTENT(OUT) :: cons
-    !------------------------------------------------------------------------!
-    CALL this%Convert2Conservative_facesub(Mesh,Mesh%IGMIN,Mesh%IGMAX, &
-                                                Mesh%JGMIN,Mesh%JGMAX, &
-                                                Mesh%KGMIN,Mesh%KGMAX, &
-                                           prim,cons)
-  END SUBROUTINE Convert2Conservative_faces
-
-
-  !> Convert to from primitve to conservative variables at cell-faces
-  PURE SUBROUTINE Convert2Conservative_facesub(this,Mesh,i1,i2,j1,j2,k1,k2,prim,cons)
-    IMPLICIT NONE
-    !------------------------------------------------------------------------!
-    CLASS(physics_eulerisotherm), INTENT(IN)  :: this
-    CLASS(mesh_base),         INTENT(IN)  :: Mesh
-    INTEGER,                  INTENT(IN)  :: i1,i2,j1,j2,k1,k2
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%NFACES,this%VNUM), &
-                              INTENT(IN)  :: prim
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%NFACES,this%VNUM), &
-                              INTENT(OUT) :: cons
-    !------------------------------------------------------------------------!
-    SELECT CASE(this%VDIM)
-    CASE(1) ! 1D velocity / momentum
-      CALL Prim2Cons(prim(i1:i2,j1:j2,k1:k2,:,this%DENSITY)  , &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%XVELOCITY), &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%DENSITY)  , &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%XMOMENTUM) &
-                    )
-    CASE(2) ! 2D velocity / momentum
-      CALL Prim2Cons(prim(i1:i2,j1:j2,k1:k2,:,this%DENSITY)  , &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%XVELOCITY), &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%YVELOCITY), &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%DENSITY)  , &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%XMOMENTUM), &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%YMOMENTUM) &
-                    )
-    CASE(3) ! 3D velocity / momentum
-      CALL Prim2Cons(prim(i1:i2,j1:j2,k1:k2,:,this%DENSITY)  , &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%XVELOCITY), &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%YVELOCITY), &
-                     prim(i1:i2,j1:j2,k1:k2,:,this%ZVELOCITY), &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%DENSITY)  , &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%XMOMENTUM), &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%YMOMENTUM), &
-                     cons(i1:i2,j1:j2,k1:k2,:,this%ZMOMENTUM) &
-                    )
-    END SELECT
-  END SUBROUTINE Convert2Conservative_facesub
+  END SUBROUTINE Convert2Conservative_subset
 
   !> Calculates wave speeds at cell-centers
   PURE SUBROUTINE CalcWaveSpeeds_center(this,Mesh,pvar,minwav,maxwav)
@@ -786,111 +704,107 @@ CONTAINS
           TYPE IS(statevector_eulerisotherm)
             ! no source terms
             s%density%data1d(:) = 0.0
-            SELECT CASE(this%VDIM)
-            CASE(1) ! 1D
-              IF (Mesh%INUM.GT.1) THEN
-                ! x-momentum
-                ! vy = vz = my = mz = 0
-                s%momentum%data2d(:,1) = GetGeometricalSourceX( &
-                   Mesh%cxyx%data2d(:,2),Mesh%cxzx%data2d(:,2), &
-                   Mesh%cyxy%data2d(:,2),Mesh%czxz%data2d(:,2), &
-                   p%velocity%data2d(:,1),0.0,0.0, &
-                   p%density%data1d(:)*this%bccsound%data1d(:)**2, &
-                   0.0,0.0)
-              ELSE IF (Mesh%JNUM.GT.1) THEN
-                ! y-momentum
-                ! vx = vz = mx = mz = 0
-                s%momentum%data2d(:,1) = GetGeometricalSourceY( &
-                   Mesh%cxyx%data2d(:,2),Mesh%cyxy%data2d(:,2), &
-                   Mesh%cyzy%data2d(:,2),Mesh%czyz%data2d(:,2), &
-                   0.0,p%velocity%data2d(:,1),0.0, &
-                   p%density%data1d(:)*this%bccsound%data1d(:)**2, &
-                   0.0,0.0)
-              ELSE IF (Mesh%KNUM.GT.1) THEN
-                ! z-momentum
-                ! vx = vy = mx = my = 0
-                s%momentum%data2d(:,1) = GetGeometricalSourceZ( &
-                   Mesh%cxzx%data2d(:,2),Mesh%cyzy%data2d(:,2), &
-                   Mesh%czxz%data2d(:,2),Mesh%czyz%data2d(:,2), &
-                   0.0,0.0,p%velocity%data2d(:,1), &
-                   p%density%data1d(:)*this%bccsound%data1d(:)**2, &
-                   0.0,0.0)
-              END IF
-            CASE(2) ! 2D
-              IF (Mesh%KNUM.EQ.1.AND..NOT.Mesh%ROTSYM.EQ.3) THEN
-                ! vz = mz = 0
-                ! x-momentum
-                s%momentum%data2d(:,1) = GetGeometricalSourceX( &
-                   Mesh%cxyx%data2d(:,2),Mesh%cxzx%data2d(:,2), &
-                   Mesh%cyxy%data2d(:,2),Mesh%czxz%data2d(:,2), &
-                   p%velocity%data2d(:,1),p%velocity%data2d(:,2),0.0, &
-                   p%density%data1d(:)*this%bccsound%data1d(:)**2, &
-                   c%momentum%data2d(:,2),0.0)
-                ! y-momentum
-                s%momentum%data2d(:,2) = GetGeometricalSourceY( &
-                   Mesh%cxyx%data2d(:,2),Mesh%cyxy%data2d(:,2), &
-                   Mesh%cyzy%data2d(:,2),Mesh%czyz%data2d(:,2), &
-                   p%velocity%data2d(:,1),p%velocity%data2d(:,2),0.0, &
-                   p%density%data1d(:)*this%bccsound%data1d(:)**2, &
-                   c%momentum%data2d(:,1),0.0)
-              ELSE IF (Mesh%JNUM.EQ.1.AND..NOT.Mesh%ROTSYM.EQ.2) THEN
-                ! vy = my = 0
-                ! x-momentum
-                s%momentum%data2d(:,1) = GetGeometricalSourceX( &
-                   Mesh%cxyx%data2d(:,2),Mesh%cxzx%data2d(:,2), &
-                   Mesh%cyxy%data2d(:,2),Mesh%czxz%data2d(:,2), &
-                   p%velocity%data2d(:,1),0.0,p%velocity%data2d(:,2), &
-                   p%density%data1d(:)*this%bccsound%data1d(:)**2, &
-                   0.0,c%momentum%data2d(:,2))
-                ! z-momentum
-                s%momentum%data2d(:,2) = GetGeometricalSourceZ( &
-                   Mesh%cxzx%data2d(:,2),Mesh%cyzy%data2d(:,2), &
-                   Mesh%czxz%data2d(:,2),Mesh%czyz%data2d(:,2), &
-                   p%velocity%data2d(:,1),0.0,p%velocity%data2d(:,2), &
-                   p%density%data1d(:)*this%bccsound%data1d(:)**2, &
-                   0.0,c%momentum%data2d(:,2))
-              ELSE IF (Mesh%INUM.EQ.1.AND..NOT.Mesh%ROTSYM.EQ.1) THEN
-                ! vx = mx = 0
-                ! y-momentum
-                s%momentum%data2d(:,1) = GetGeometricalSourceY( &
-                   Mesh%cxyx%data2d(:,2),Mesh%cyxy%data2d(:,2), &
-                   Mesh%cyzy%data2d(:,2),Mesh%czyz%data2d(:,2), &
-                   0.0,p%velocity%data2d(:,1),p%velocity%data2d(:,2), &
-                   p%density%data1d(:)*this%bccsound%data1d(:)**2, &
-                   0.0,c%momentum%data2d(:,2))
-                ! z-momentum
-                s%momentum%data2d(:,2) = GetGeometricalSourceZ( &
-                   Mesh%cxzx%data2d(:,2),Mesh%cyzy%data2d(:,2), &
-                   Mesh%czxz%data2d(:,2),Mesh%czyz%data2d(:,2), &
-                   0.0,p%velocity%data2d(:,1),p%velocity%data2d(:,2), &
-                   p%density%data1d(:)*this%bccsound%data1d(:)**2, &
-                   0.0,c%momentum%data2d(:,2))
-              END IF
-            CASE(3) ! 3D
-                ! x-momentum
-                s%momentum%data2d(:,1) = GetGeometricalSourceX( &
-                   Mesh%cxyx%data2d(:,2),Mesh%cxzx%data2d(:,2), &
-                   Mesh%cyxy%data2d(:,2),Mesh%czxz%data2d(:,2), &
-                   p%velocity%data2d(:,1),p%velocity%data2d(:,2), &
-                   p%velocity%data2d(:,3), &
-                   p%density%data1d(:)*this%bccsound%data1d(:)**2, &
-                   c%momentum%data2d(:,2),c%momentum%data2d(:,3))
-                ! y-momentum
-                s%momentum%data2d(:,2) = GetGeometricalSourceY( &
-                   Mesh%cxyx%data2d(:,2),Mesh%cyxy%data2d(:,2), &
-                   Mesh%cyzy%data2d(:,2),Mesh%czyz%data2d(:,2), &
-                   p%velocity%data2d(:,1),p%velocity%data2d(:,2), &
-                   p%velocity%data2d(:,3), &
-                   p%density%data1d(:)*this%bccsound%data1d(:)**2, &
-                   c%momentum%data2d(:,1),c%momentum%data2d(:,3))
-                ! z-momentum
-                s%momentum%data2d(:,3) = GetGeometricalSourceZ( &
-                   Mesh%cxzx%data2d(:,2),Mesh%cyzy%data2d(:,2), &
-                   Mesh%czxz%data2d(:,2),Mesh%czyz%data2d(:,2), &
-                   p%velocity%data2d(:,1),p%velocity%data2d(:,2), &
-                   p%velocity%data2d(:,3), &
-                   p%density%data1d(:)*this%bccsound%data1d(:)**2, &
-                   c%momentum%data2d(:,1),c%momentum%data2d(:,2))
+            SELECT CASE(Mesh%VECTOR_COMPONENTS)
+            CASE(VECTOR_X) ! 1D momentum in x-direction
+              ! vy = vz = my = mz = 0
+              s%momentum%data2d(:,1) = GetGeometricalSourceX( &
+                  Mesh%cxyx%data2d(:,2),Mesh%cxzx%data2d(:,2), &
+                  Mesh%cyxy%data2d(:,2),Mesh%czxz%data2d(:,2), &
+                  p%velocity%data2d(:,1),0.0,0.0, &
+                  p%density%data1d(:)*this%bccsound%data1d(:)**2, &
+                  0.0,0.0)
+            CASE(VECTOR_Y) ! 1D momentum in y-direction
+              ! vx = vz = mx = mz = 0
+              s%momentum%data2d(:,1) = GetGeometricalSourceY( &
+                  Mesh%cxyx%data2d(:,2),Mesh%cyxy%data2d(:,2), &
+                  Mesh%cyzy%data2d(:,2),Mesh%czyz%data2d(:,2), &
+                  0.0,p%velocity%data2d(:,1),0.0, &
+                  p%density%data1d(:)*this%bccsound%data1d(:)**2, &
+                  0.0,0.0)
+            CASE(VECTOR_Z) ! 1D momentum in z-direction
+              ! vx = vy = mx = my = 0
+              s%momentum%data2d(:,1) = GetGeometricalSourceZ( &
+                  Mesh%cxzx%data2d(:,2),Mesh%cyzy%data2d(:,2), &
+                  Mesh%czxz%data2d(:,2),Mesh%czyz%data2d(:,2), &
+                  0.0,0.0,p%velocity%data2d(:,1), &
+                  p%density%data1d(:)*this%bccsound%data1d(:)**2, &
+                  0.0,0.0)
+            CASE(IOR(VECTOR_X,VECTOR_Y)) ! 2D momentum in x-y-plane
+              ! vz = mz = 0
+              ! x-momentum
+              s%momentum%data2d(:,1) = GetGeometricalSourceX( &
+                  Mesh%cxyx%data2d(:,2),Mesh%cxzx%data2d(:,2), &
+                  Mesh%cyxy%data2d(:,2),Mesh%czxz%data2d(:,2), &
+                  p%velocity%data2d(:,1),p%velocity%data2d(:,2),0.0, &
+                  p%density%data1d(:)*this%bccsound%data1d(:)**2, &
+                  c%momentum%data2d(:,2),0.0)
+              ! y-momentum
+              s%momentum%data2d(:,2) = GetGeometricalSourceY( &
+                  Mesh%cxyx%data2d(:,2),Mesh%cyxy%data2d(:,2), &
+                  Mesh%cyzy%data2d(:,2),Mesh%czyz%data2d(:,2), &
+                  p%velocity%data2d(:,1),p%velocity%data2d(:,2),0.0, &
+                  p%density%data1d(:)*this%bccsound%data1d(:)**2, &
+                  c%momentum%data2d(:,1),0.0)
+            CASE(IOR(VECTOR_X,VECTOR_Z)) ! 2D momentum in x-z-plane
+              ! vy = my = 0
+              ! x-momentum
+              s%momentum%data2d(:,1) = GetGeometricalSourceX( &
+                  Mesh%cxyx%data2d(:,2),Mesh%cxzx%data2d(:,2), &
+                  Mesh%cyxy%data2d(:,2),Mesh%czxz%data2d(:,2), &
+                  p%velocity%data2d(:,1),0.0,p%velocity%data2d(:,2), &
+                  p%density%data1d(:)*this%bccsound%data1d(:)**2, &
+                  0.0,c%momentum%data2d(:,2))
+              ! z-momentum
+              s%momentum%data2d(:,2) = GetGeometricalSourceZ( &
+                  Mesh%cxzx%data2d(:,2),Mesh%cyzy%data2d(:,2), &
+                  Mesh%czxz%data2d(:,2),Mesh%czyz%data2d(:,2), &
+                  p%velocity%data2d(:,1),0.0,p%velocity%data2d(:,2), &
+                  p%density%data1d(:)*this%bccsound%data1d(:)**2, &
+                  c%momentum%data2d(:,1),0.0)
+            CASE(IOR(VECTOR_Y,VECTOR_Z)) ! 2D momentum in y-z-plane
+              ! vx = mx = 0
+              ! y-momentum
+              s%momentum%data2d(:,1) = GetGeometricalSourceY( &
+                  Mesh%cxyx%data2d(:,2),Mesh%cyxy%data2d(:,2), &
+                  Mesh%cyzy%data2d(:,2),Mesh%czyz%data2d(:,2), &
+                  0.0,p%velocity%data2d(:,1),p%velocity%data2d(:,2), &
+                  p%density%data1d(:)*this%bccsound%data1d(:)**2, &
+                  0.0,c%momentum%data2d(:,2))
+              ! z-momentum
+              s%momentum%data2d(:,2) = GetGeometricalSourceZ( &
+                  Mesh%cxzx%data2d(:,2),Mesh%cyzy%data2d(:,2), &
+                  Mesh%czxz%data2d(:,2),Mesh%czyz%data2d(:,2), &
+                  0.0,p%velocity%data2d(:,1),p%velocity%data2d(:,2), &
+                  p%density%data1d(:)*this%bccsound%data1d(:)**2, &
+                  0.0,c%momentum%data2d(:,1))
+            CASE(IOR(IOR(VECTOR_X,VECTOR_Y),VECTOR_Z)) ! 3D momentum
+              ! x-momentum
+              s%momentum%data2d(:,1) = GetGeometricalSourceX( &
+                  Mesh%cxyx%data2d(:,2),Mesh%cxzx%data2d(:,2), &
+                  Mesh%cyxy%data2d(:,2),Mesh%czxz%data2d(:,2), &
+                  p%velocity%data2d(:,1),p%velocity%data2d(:,2), &
+                  p%velocity%data2d(:,3), &
+                  p%density%data1d(:)*this%bccsound%data1d(:)**2, &
+                  c%momentum%data2d(:,2),c%momentum%data2d(:,3))
+              ! y-momentum
+              s%momentum%data2d(:,2) = GetGeometricalSourceY( &
+                  Mesh%cxyx%data2d(:,2),Mesh%cyxy%data2d(:,2), &
+                  Mesh%cyzy%data2d(:,2),Mesh%czyz%data2d(:,2), &
+                  p%velocity%data2d(:,1),p%velocity%data2d(:,2), &
+                  p%velocity%data2d(:,3), &
+                  p%density%data1d(:)*this%bccsound%data1d(:)**2, &
+                  c%momentum%data2d(:,1),c%momentum%data2d(:,3))
+              ! z-momentum
+              s%momentum%data2d(:,3) = GetGeometricalSourceZ( &
+                  Mesh%cxzx%data2d(:,2),Mesh%cyzy%data2d(:,2), &
+                  Mesh%czxz%data2d(:,2),Mesh%czyz%data2d(:,2), &
+                  p%velocity%data2d(:,1),p%velocity%data2d(:,2), &
+                  p%velocity%data2d(:,3), &
+                  p%density%data1d(:)*this%bccsound%data1d(:)**2, &
+                  c%momentum%data2d(:,1),c%momentum%data2d(:,2))
+            CASE DEFAULT
+              ! return NaN
+              s%momentum%data1d(:) = NAN_DEFAULT_REAL
             END SELECT
           END SELECT
         END SELECT
@@ -1060,162 +974,224 @@ CONTAINS
     END SELECT
   END SUBROUTINE CalcFluxesZ
 
-
+  !> compute viscous source terms
   PURE SUBROUTINE ViscositySources(this,Mesh,pvar,btxx,btxy,btxz,btyy,btyz,btzz,sterm)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
     CLASS(physics_eulerisotherm), INTENT(INOUT) :: this
     CLASS(mesh_base),       INTENT(IN)    :: Mesh
-    REAL,                   INTENT(IN), &
-       DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) &
-                                           :: pvar
+    CLASS(marray_compound), INTENT(INOUT) :: pvar,sterm
     REAL,                   INTENT(IN), &
        DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX) &
                                            :: btxx,btxy,btxz,btyy,btyz,btzz
-    REAL,                   INTENT(OUT), &
-       DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) &
-                                          :: sterm
-   !------------------------------------------------------------------------!
-   ! mean values of stress tensor components across the cell interfaces
+    !------------------------------------------------------------------------!
+    SELECT TYPE(p => pvar)
+    CLASS IS(statevector_eulerisotherm)
+      SELECT TYPE(s => sterm)
+      CLASS IS(statevector_eulerisotherm)
+        ! no viscous sources in continuity equation
+        s%density%data1d(:) = 0.0
+        ! viscous momentum sources
+        SELECT CASE(this%VDIM)
+!         CASE(1) ! 1D velocities are currently not supported
+!           CALL Mesh%Divergence(btxx,sterm(:,:,:,this%XMOMENTUM))
+        CASE(2)
+          ! divergence of stress tensor with symmetry btyx=btxy
+          CALL Mesh%Divergence(btxx,btxy,btxy,btyy,s%momentum%data4d(:,:,:,1), &
+                               s%momentum%data4d(:,:,:,2))
+        CASE(3)
+          ! divergence of stress tensor with symmetry btyx=btxy, btxz=btzx, btyz=btzy
+          CALL Mesh%Divergence(btxx,btxy,btxz,btxy,btyy,btyz,btxz,btyz,btzz, &
+               s%momentum%data4d(:,:,:,1),s%momentum%data4d(:,:,:,2), &
+               s%momentum%data4d(:,:,:,3))
+        CASE DEFAULT
+          ! return NaN
+          s%data1d(:) = NAN_DEFAULT_REAL
+        END SELECT
+      END SELECT
+    END SELECT
+  END SUBROUTINE ViscositySources
 
-   ! viscosity source terms
-    sterm(:,:,:,this%DENSITY) = 0.0 
-
-   ! compute viscous momentum sources
-   ! divergence of stress tensor with symmetry btyx=btxy
-   SELECT CASE(this%VDIM)
-!   CASE(1)
-!     CALL Mesh%Divergence(btxx,sterm(:,:,:,this%XMOMENTUM))
-   CASE(2)
-    CALL Mesh%Divergence(btxx,btxy,btxy,btyy,sterm(:,:,:,this%XMOMENTUM), &
-                         sterm(:,:,:,this%YMOMENTUM))
-   CASE(3)
-    CALL Mesh%Divergence(btxx,btxy,btxz,btxy,btyy,btyz,btxz,btyz,btzz,sterm(:,:,:,this%XMOMENTUM), &
-                         sterm(:,:,:,this%YMOMENTUM),sterm(:,:,:,this%ZMOMENTUM))
-   END SELECT
-
- END SUBROUTINE ViscositySources
-
-  ! identical to isothermal case. 
-  PURE SUBROUTINE CalcStresses_euler(this,Mesh,pvar,dynvis,bulkvis, &
+  !> calculate components of the stress tensor
+  !!
+  !! The components are computed at cell bary centers inside the computational
+  !! domain including one slice of ghost cells.
+  PURE SUBROUTINE CalcStresses(this,Mesh,pvar,dynvis,bulkvis, &
        btxx,btxy,btxz,btyy,btyz,btzz)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
-    CLASS(Physics_eulerisotherm), INTENT(INOUT) :: this
-    CLASS(Mesh_base), INTENT(IN)          :: Mesh
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) :: pvar
+    CLASS(physics_eulerisotherm), INTENT(INOUT) :: this
+    CLASS(mesh_base), INTENT(IN)          :: Mesh
+    CLASS(marray_compound), INTENT(INOUT) :: pvar
+    CLASS(marray_base), INTENT(INOUT)     :: dynvis,bulkvis
     REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX) :: &
-         dynvis,bulkvis,btxx,btxy,btxz,btyy,btyz,btzz
+         btxx,btxy,btxz,btyy,btyz,btzz
     !------------------------------------------------------------------------!
     INTEGER           :: i,j,k
     !------------------------------------------------------------------------!
-    INTENT(IN)        :: pvar,dynvis,bulkvis
     INTENT(OUT)       :: btxx,btxy,btxz,btyy,btyz,btzz
     !------------------------------------------------------------------------!
-    ! compute components of the stress tensor at cell bary centers
-    ! inside the computational domain including one slice of ghost cells
-
-    ! compute bulk viscosity first and store the result in this%tmp
-    SELECT CASE(this%VDIM)
-!    CASE(1)
-!      CALL Mesh%Divergence(pvar(:,:,:,this%XVELOCITY),this%tmp(:,:,:))
-    CASE(2)
-      CALL Mesh%Divergence(pvar(:,:,:,this%XVELOCITY),pvar(:,:,:,this%YVELOCITY),this%tmp(:,:,:))
-    CASE(3)
-      CALL Mesh%Divergence(pvar(:,:,:,this%XVELOCITY),pvar(:,:,:,this%YVELOCITY),pvar(:,:,:,this%ZVELOCITY),this%tmp(:,:,:))
-    END SELECT
-    this%tmp(:,:,:) = bulkvis(:,:,:)*this%tmp(:,:,:)
-
-    SELECT CASE(this%VDIM)
-!    CASE(1)
-!    !NEC$ OUTERLOOP_UNROLL(8)
-!       DO k=Mesh%KMIN-Mesh%KP1,Mesh%KMAX+Mesh%KP1
-!        DO j=Mesh%JMIN-Mesh%JP1,Mesh%JMAX+Mesh%JP1
-!          !NEC$ IVDEP
-!          DO i=Mesh%IMIN-Mesh%IP1,Mesh%IMAX+Mesh%IP1
-!          ! compute the diagonal elements of the stress tensor
-!          btxx(i,j,k) = dynvis(i,j,k) * &
-!                (pvar(i+1,j,k,this%XVELOCITY) - pvar(i-1,j,k,this%XVELOCITY)) / Mesh%dlx%data3d(i,j,k) &
-!               + this%tmp(i,j,k)
-!
-!          END DO
-!        END DO
-!       END DO
-    CASE(2)
-!NEC$ OUTERLOOP_UNROLL(8)
-  DO k=Mesh%KMIN-Mesh%KP1,Mesh%KMAX+Mesh%KP1
-    DO j=Mesh%JMIN-Mesh%JP1,Mesh%JMAX+Mesh%JP1
+    SELECT TYPE(p => pvar)
+    CLASS IS(statevector_eulerisotherm)
+      SELECT CASE(Mesh%VECTOR_COMPONENTS)
+!!!! 1D velocities are currently not supported !!!!
+!         CASE(VECTOR_X) ! 1D velocity in x-direction
+!         CASE(VECTOR_Y) ! 1D velocity in y-direction
+!         CASE(VECTOR_Z) ! 1D velocity in z-direction
+      CASE(IOR(VECTOR_X,VECTOR_Y)) ! 2D velocities in x-y-plane
+        ! compute bulk viscosity first and store the result in this%tmp
+        CALL Mesh%Divergence(p%velocity%data4d(:,:,:,1),p%velocity%data4d(:,:,:,2),&
+                             this%tmp(:,:,:))
+        this%tmp(:,:,:) = bulkvis%data3d(:,:,:)*this%tmp(:,:,:)
+        DO k=Mesh%KMIN-Mesh%KP1,Mesh%KMAX+Mesh%KP1
+          DO j=Mesh%JMIN-Mesh%JP1,Mesh%JMAX+Mesh%JP1
 !NEC$ IVDEP
-       DO i=Mesh%IMIN-Mesh%IP1,Mesh%IMAX+Mesh%IP1
-          ! compute the diagonal elements of the stress tensor
-          btxx(i,j,k) = dynvis(i,j,k) * &
-                ((pvar(i+1,j,k,this%XVELOCITY) - pvar(i-1,j,k,this%XVELOCITY)) / Mesh%dlx%data3d(i,j,k) &
-               + 2.0 * Mesh%cxyx%bcenter(i,j,k) * pvar(i,j,k,this%YVELOCITY)) &
-               + this%tmp(i,j,k)
-
-          btyy(i,j,k) = dynvis(i,j,k) * &
-               ( (pvar(i,j+1,k,this%YVELOCITY) - pvar(i,j-1,k,this%YVELOCITY)) / Mesh%dly%data3d(i,j,k) &
-               + 2.0 * Mesh%cyxy%bcenter(i,j,k) * pvar(i,j,k,this%XVELOCITY) ) &
-               + this%tmp(i,j,k)
-
-          ! compute the off-diagonal elements (no bulk viscosity)
-          btxy(i,j,k) = dynvis(i,j,k) * ( 0.5 * &
-               ( (pvar(i+1,j,k,this%YVELOCITY) - pvar(i-1,j,k,this%YVELOCITY)) / Mesh%dlx%data3d(i,j,k) &
-               + (pvar(i,j+1,k,this%XVELOCITY) - pvar(i,j-1,k,this%XVELOCITY)) / Mesh%dly%data3d(i,j,k) ) &
-               - Mesh%cxyx%bcenter(i,j,k) * pvar(i,j,k,this%XVELOCITY) &
-               - Mesh%cyxy%bcenter(i,j,k) * pvar(i,j,k,this%YVELOCITY) )
-
-       END DO
-    END DO
-  END DO
-    CASE(3)
-!NEC$ OUTERLOOP_UNROLL(8)
-  DO k=Mesh%KMIN-Mesh%KP1,Mesh%KMAX+Mesh%KP1
-    DO j=Mesh%JMIN-Mesh%JP1,Mesh%JMAX+Mesh%JP1
+            DO i=Mesh%IMIN-Mesh%IP1,Mesh%IMAX+Mesh%IP1
+              ! compute the diagonal elements of the stress tensor
+              btxx(i,j,k) = dynvis%data3d(i,j,k) * &
+                    ((p%velocity%data4d(i+Mesh%IP1,j,k,1) - p%velocity%data4d(i-Mesh%IP1,j,k,1)) &
+                      / Mesh%dlx%data3d(i,j,k) &
+                  + 2.0 * Mesh%cxyx%bcenter(i,j,k) * p%velocity%data4d(i,j,k,2)) + this%tmp(i,j,k)
+              btyy(i,j,k) = dynvis%data3d(i,j,k) * &
+                    ((p%velocity%data4d(i,j+Mesh%JP1,k,2) - p%velocity%data4d(i,j-Mesh%JP1,k,2)) &
+                      / Mesh%dly%data3d(i,j,k) &
+                  + 2.0 * Mesh%cyxy%bcenter(i,j,k) * p%velocity%data4d(i,j,k,1) ) + this%tmp(i,j,k)
+              ! compute the off-diagonal elements (no bulk viscosity)
+              btxy(i,j,k) = dynvis%data3d(i,j,k) * ( 0.5 * &
+                    ((p%velocity%data4d(i+Mesh%IP1,j,k,2) - p%velocity%data4d(i-Mesh%IP1,j,k,2)) &
+                      / Mesh%dlx%data3d(i,j,k) &
+                  +  (p%velocity%data4d(i,j+Mesh%JP1,k,1) - p%velocity%data4d(i,j-Mesh%JP1,k,1)) &
+                      / Mesh%dly%data3d(i,j,k) ) &
+                  - Mesh%cxyx%bcenter(i,j,k) * p%velocity%data4d(i,j,k,1) &
+                  - Mesh%cyxy%bcenter(i,j,k) * p%velocity%data4d(i,j,k,2) )
+            END DO
+          END DO
+        END DO
+      CASE(IOR(VECTOR_X,VECTOR_Z)) ! 2D velocities in x-z-plane
+        ! compute bulk viscosity first and store the result in this%tmp
+        CALL Mesh%Divergence(p%velocity%data4d(:,:,:,1),p%velocity%data4d(:,:,:,2),&
+                             this%tmp(:,:,:))
+        this%tmp(:,:,:) = bulkvis%data3d(:,:,:)*this%tmp(:,:,:)
+        DO k=Mesh%KMIN-Mesh%KP1,Mesh%KMAX+Mesh%KP1
+          DO j=Mesh%JMIN-Mesh%JP1,Mesh%JMAX+Mesh%JP1
 !NEC$ IVDEP
-       DO i=Mesh%IMIN-Mesh%IP1,Mesh%IMAX+Mesh%IP1
-          ! compute the diagonal elements of the stress tensor
-          btxx(i,j,k) = dynvis(i,j,k) * &
-                ((pvar(i+1,j,k,this%XVELOCITY) - pvar(i-1,j,k,this%XVELOCITY)) / Mesh%dlx%data3d(i,j,k) &
-               + 2.0 * Mesh%cxyx%bcenter(i,j,k) * pvar(i,j,k,this%YVELOCITY) &
-               + 2.0 * Mesh%cxzx%bcenter(i,j,k) * pvar(i,j,k,this%ZVELOCITY) ) &
-               + this%tmp(i,j,k)
-
-          btyy(i,j,k) = dynvis(i,j,k) * &
-               ( (pvar(i,j+1,k,this%YVELOCITY) - pvar(i,j-1,k,this%YVELOCITY)) / Mesh%dly%data3d(i,j,k) &
-               + 2.0 * Mesh%cyxy%bcenter(i,j,k) * pvar(i,j,k,this%XVELOCITY)  &
-               + 2.0 * Mesh%cyzy%bcenter(i,j,k) * pvar(i,j,k,this%ZVELOCITY) ) &
-               + this%tmp(i,j,k)
-
-          btzz(i,j,k) = dynvis(i,j,k) * &
-               ( (pvar(i,j,k+1,this%ZVELOCITY) - pvar(i,j,k-1,this%ZVELOCITY)) / Mesh%dlz%data3d(i,j,k) &
-               + 2.0 * Mesh%czxz%bcenter(i,j,k) * pvar(i,j,k,this%XVELOCITY) &
-               + 2.0 * Mesh%czyz%bcenter(i,j,k) * pvar(i,j,k,this%YVELOCITY) ) &
-               + this%tmp(i,j,k)
-
-          ! compute the off-diagonal elements (no bulk viscosity)
-          btxy(i,j,k) = dynvis(i,j,k) * ( 0.5 * &
-               ( (pvar(i+1,j,k,this%YVELOCITY) - pvar(i-1,j,k,this%YVELOCITY)) / Mesh%dlx%data3d(i,j,k) &
-               + (pvar(i,j+1,k,this%XVELOCITY) - pvar(i,j-1,k,this%XVELOCITY)) / Mesh%dly%data3d(i,j,k) ) &
-               - Mesh%cxyx%bcenter(i,j,k) * pvar(i,j,k,this%XVELOCITY) &
-               - Mesh%cyxy%bcenter(i,j,k) * pvar(i,j,k,this%YVELOCITY) )
-
-          btxz(i,j,k) = dynvis(i,j,k) * ( 0.5 * &
-               ( (pvar(i+1,j,k,this%ZVELOCITY) - pvar(i-1,j,k,this%ZVELOCITY)) / Mesh%dlx%data3d(i,j,k) &
-               + (pvar(i,j,k+1,this%XVELOCITY) - pvar(i,j,k-1,this%XVELOCITY)) / Mesh%dlz%data3d(i,j,k) ) &
-               - Mesh%czxz%bcenter(i,j,k) * pvar(i,j,k,this%ZVELOCITY) &
-               - Mesh%cxzx%bcenter(i,j,k) * pvar(i,j,k,this%XVELOCITY) )
-
-          btyz(i,j,k) = dynvis(i,j,k) * ( 0.5 * &
-               ( (pvar(i,j,k+1,this%YVELOCITY) - pvar(i,j,k-1,this%YVELOCITY)) / Mesh%dlz%data3d(i,j,k) &
-               + (pvar(i,j+1,k,this%ZVELOCITY) - pvar(i,j-1,k,this%ZVELOCITY)) / Mesh%dly%data3d(i,j,k) ) &
-               - Mesh%czyz%bcenter(i,j,k) * pvar(i,j,k,this%ZVELOCITY) &
-               - Mesh%cyzy%bcenter(i,j,k) * pvar(i,j,k,this%YVELOCITY) )
+            DO i=Mesh%IMIN-Mesh%IP1,Mesh%IMAX+Mesh%IP1
+              ! compute the diagonal elements btxx, btzz => btyy of the stress tensor
+              btxx(i,j,k) = dynvis%data3d(i,j,k) * &
+                    ((p%velocity%data4d(i+Mesh%IP1,j,k,1) - p%velocity%data4d(i-Mesh%IP1,j,k,1)) &
+                      / Mesh%dlx%data3d(i,j,k) &
+                  + 2.0 * Mesh%cxzx%bcenter(i,j,k) * p%velocity%data4d(i,j,k,2) ) & ! vz => vy
+                  + this%tmp(i,j,k)
+              btyy(i,j,k) = dynvis%data3d(i,j,k) * & ! btzz => btyy
+                    ((p%velocity%data4d(i,j,k+Mesh%KP1,2) - p%velocity%data4d(i,j,k-Mesh%KP1,2)) & ! vz => vy
+                      / Mesh%dlz%data3d(i,j,k) &
+                  + 2.0 * Mesh%czxz%bcenter(i,j,k) * p%velocity%data4d(i,j,k,1) ) &
+                  + this%tmp(i,j,k)
+              ! compute the off-diagonal elements btxz => btxy (no bulk viscosity)
+              btxy(i,j,k) = dynvis%data3d(i,j,k) * ( 0.5 * & ! btxz => btxy
+                    ((p%velocity%data4d(i+Mesh%IP1,j,k,2) - p%velocity%data4d(i-Mesh%IP1,j,k,2)) & ! vz => vy
+                      / Mesh%dlx%data3d(i,j,k) &
+                  +  (p%velocity%data4d(i,j,k+Mesh%KP1,1) - p%velocity%data4d(i,j,k-Mesh%KP1,1)) &
+                      / Mesh%dlz%data3d(i,j,k) ) &
+                  - Mesh%czxz%bcenter(i,j,k) * p%velocity%data4d(i,j,k,2) & ! vz => vy
+                  - Mesh%cxzx%bcenter(i,j,k) * p%velocity%data4d(i,j,k,1) )
+            END DO
+          END DO
         END DO
+      CASE(IOR(VECTOR_Y,VECTOR_Z)) ! 2D velocities in y-z-plane
+        CALL Mesh%Divergence(p%velocity%data4d(:,:,:,1),p%velocity%data4d(:,:,:,2),&
+                             this%tmp(:,:,:))
+        this%tmp(:,:,:) = bulkvis%data3d(:,:,:)*this%tmp(:,:,:)
+        DO k=Mesh%KMIN-Mesh%KP1,Mesh%KMAX+Mesh%KP1
+          DO j=Mesh%JMIN-Mesh%JP1,Mesh%JMAX+Mesh%JP1
+!NEC$ IVDEP
+            DO i=Mesh%IMIN-Mesh%IP1,Mesh%IMAX+Mesh%IP1
+              ! compute the diagonal elements btyy => btxx, btzz => btyy of the stress tensor
+              btxx(i,j,k) = dynvis%data3d(i,j,k) * &
+                    ((p%velocity%data4d(i,j+Mesh%JP1,k,1) - p%velocity%data4d(i,j-Mesh%JP1,k,1)) &
+                      / Mesh%dly%data3d(i,j,k) &
+                  + 2.0 * Mesh%cyzy%bcenter(i,j,k) * p%velocity%data4d(i,j,k,2) ) & ! vz => vy
+                  + this%tmp(i,j,k)
+              btyy(i,j,k) = dynvis%data3d(i,j,k) * &
+                    ((p%velocity%data4d(i,j,k+Mesh%KP1,2) - p%velocity%data4d(i,j,k-Mesh%KP1,2)) & ! vz => vy
+                      / Mesh%dlz%data3d(i,j,k) &
+                  + 2.0 * Mesh%czyz%bcenter(i,j,k) * p%velocity%data4d(i,j,k,1) ) &
+                  + this%tmp(i,j,k)
+              ! compute the off-diagonal elements btyz => btxy (no bulk viscosity)
+              btxy(i,j,k) = dynvis%data3d(i,j,k) * ( 0.5 * &
+                    ((p%velocity%data4d(i,j,k+Mesh%KP1,1) - p%velocity%data4d(i,j,k-Mesh%KP1,1)) & ! vy => vx
+                      / Mesh%dlz%data3d(i,j,k) &
+                  +  (p%velocity%data4d(i,j+Mesh%JP1,k,2) - p%velocity%data4d(i,j-Mesh%JP1,k,2)) & ! vz => vy
+                      / Mesh%dly%data3d(i,j,k) ) &
+                  - Mesh%czyz%bcenter(i,j,k) * p%velocity%data4d(i,j,k,2) & ! vz => vy
+                  - Mesh%cyzy%bcenter(i,j,k) * p%velocity%data4d(i,j,k,1) ) ! vy => vx
+            END DO
+          END DO
         END DO
+      CASE(IOR(IOR(VECTOR_X,VECTOR_Y),VECTOR_Z)) ! 3D velocities
+        ! compute bulk viscosity first and store the result in this%tmp
+        CALL Mesh%Divergence(p%velocity%data4d(:,:,:,1),p%velocity%data4d(:,:,:,2),&
+                            p%velocity%data4d(:,:,:,3),this%tmp(:,:,:))
+        this%tmp(:,:,:) = bulkvis%data3d(:,:,:)*this%tmp(:,:,:)
+        DO k=Mesh%KMIN-Mesh%KP1,Mesh%KMAX+Mesh%KP1
+          DO j=Mesh%JMIN-Mesh%JP1,Mesh%JMAX+Mesh%JP1
+!NEC$ IVDEP
+            DO i=Mesh%IMIN-Mesh%IP1,Mesh%IMAX+Mesh%IP1
+              ! compute the diagonal elements of the stress tensor
+              btxx(i,j,k) = dynvis%data3d(i,j,k) * &
+                    ((p%velocity%data4d(i+Mesh%IP1,j,k,1) - p%velocity%data4d(i-Mesh%IP1,j,k,1)) &
+                      / Mesh%dlx%data3d(i,j,k) &
+                  + 2.0 * Mesh%cxyx%bcenter(i,j,k) * p%velocity%data4d(i,j,k,2) &
+                  + 2.0 * Mesh%cxzx%bcenter(i,j,k) * p%velocity%data4d(i,j,k,3) ) &
+                  + this%tmp(i,j,k)
+              btyy(i,j,k) = dynvis%data3d(i,j,k) * &
+                    ((p%velocity%data4d(i,j+Mesh%JP1,k,2) - p%velocity%data4d(i,j-Mesh%JP1,k,2)) &
+                      / Mesh%dly%data3d(i,j,k) &
+                  + 2.0 * Mesh%cyxy%bcenter(i,j,k) * p%velocity%data4d(i,j,k,1)  &
+                  + 2.0 * Mesh%cyzy%bcenter(i,j,k) * p%velocity%data4d(i,j,k,3) ) &
+                  + this%tmp(i,j,k)
+              btzz(i,j,k) = dynvis%data3d(i,j,k) * &
+                    ((p%velocity%data4d(i,j,k+Mesh%KP1,3) - p%velocity%data4d(i,j,k-Mesh%KP1,3)) &
+                      / Mesh%dlz%data3d(i,j,k) &
+                  + 2.0 * Mesh%czxz%bcenter(i,j,k) * p%velocity%data4d(i,j,k,1) &
+                  + 2.0 * Mesh%czyz%bcenter(i,j,k) * p%velocity%data4d(i,j,k,2) ) &
+                  + this%tmp(i,j,k)
+              ! compute the off-diagonal elements (no bulk viscosity)
+              btxy(i,j,k) = dynvis%data3d(i,j,k) * ( 0.5 * &
+                    ((p%velocity%data4d(i+Mesh%IP1,j,k,2) - p%velocity%data4d(i-Mesh%IP1,j,k,2)) &
+                      / Mesh%dlx%data3d(i,j,k) &
+                  +  (p%velocity%data4d(i,j+Mesh%JP1,k,1) - p%velocity%data4d(i,j-Mesh%JP1,k,1)) &
+                      / Mesh%dly%data3d(i,j,k) ) &
+                  - Mesh%cxyx%bcenter(i,j,k) * p%velocity%data4d(i,j,k,1) &
+                  - Mesh%cyxy%bcenter(i,j,k) * p%velocity%data4d(i,j,k,2) )
+              btxz(i,j,k) = dynvis%data3d(i,j,k) * ( 0.5 * &
+                    ((p%velocity%data4d(i+Mesh%IP1,j,k,3) - p%velocity%data4d(i-Mesh%IP1,j,k,3)) &
+                      / Mesh%dlx%data3d(i,j,k) &
+                  +  (p%velocity%data4d(i,j,k+Mesh%KP1,1) - p%velocity%data4d(i,j,k-Mesh%KP1,1)) &
+                      / Mesh%dlz%data3d(i,j,k) ) &
+                  - Mesh%czxz%bcenter(i,j,k) * p%velocity%data4d(i,j,k,3) &
+                  - Mesh%cxzx%bcenter(i,j,k) * p%velocity%data4d(i,j,k,1) )
+              btyz(i,j,k) = dynvis%data3d(i,j,k) * ( 0.5 * &
+                    ((p%velocity%data4d(i,j,k+Mesh%KP1,2) - p%velocity%data4d(i,j,k-Mesh%KP1,2)) &
+                      / Mesh%dlz%data3d(i,j,k) &
+                  +  (p%velocity%data4d(i,j+Mesh%JP1,k,3) - p%velocity%data4d(i,j-Mesh%JP1,k,3)) &
+                      / Mesh%dly%data3d(i,j,k) ) &
+                  - Mesh%czyz%bcenter(i,j,k) * p%velocity%data4d(i,j,k,3) &
+                  - Mesh%cyzy%bcenter(i,j,k) * p%velocity%data4d(i,j,k,2) )
+            END DO
+          END DO
         END DO
+      CASE DEFAULT
+        ! return NaN
+        btxx(:,:,:) = NAN_DEFAULT_REAL
+        btxy(:,:,:) = NAN_DEFAULT_REAL
+        btxz(:,:,:) = NAN_DEFAULT_REAL
+        btyy(:,:,:) = NAN_DEFAULT_REAL
+        btyz(:,:,:) = NAN_DEFAULT_REAL
+        btzz(:,:,:) = NAN_DEFAULT_REAL
       END SELECT
-  END SUBROUTINE CalcStresses_euler
+    END SELECT
+  END SUBROUTINE CalcStresses
 
   !> compute momentum sources given an external force
   PURE SUBROUTINE ExternalSources(this,accel,pvar,cvar,sterm)
@@ -1251,21 +1227,27 @@ CONTAINS
     !------------------------------------------------------------------------!
     REAL,DIMENSION(Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX), &
                               INTENT(IN)    :: w
-    REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                              INTENT(INOUT) :: pvar,cvar
+    CLASS(marray_compound), INTENT(INOUT) ::  pvar,cvar
     !------------------------------------------------------------------------!
     INTEGER              :: i,j,k
     !------------------------------------------------------------------------!
     IF (this%transformed_xvelocity) THEN
-      DO k=Mesh%KGMIN,Mesh%KGMAX
-        DO j=Mesh%JGMIN,Mesh%JGMAX
-          DO i=Mesh%IGMIN,Mesh%IGMAX
-             pvar(i,j,k,this%XVELOCITY) = pvar(i,j,k,this%XVELOCITY) + w(j,k)
-             cvar(i,j,k,this%XMOMENTUM) = cvar(i,j,k,this%XMOMENTUM) &
-                                      + cvar(i,j,k,this%DENSITY)*w(j,k)
+      SELECT TYPE(p => pvar)
+      TYPE IS(statevector_eulerisotherm)
+        SELECT TYPE(c => cvar)
+        TYPE IS(statevector_eulerisotherm)
+          DO k=Mesh%KGMIN,Mesh%KGMAX
+            DO j=Mesh%JGMIN,Mesh%JGMAX
+              DO i=Mesh%IGMIN,Mesh%IGMAX
+                p%velocity%data4d(i,j,k,1) = p%velocity%data4d(i,j,k,1) + w(j,k)
+                c%momentum%data4d(i,j,k,1) = c%momentum%data4d(i,j,k,1) &
+                    + c%density%data3d(i,j,k)*w(j,k)
+              END DO
+            END DO
           END DO
-        END DO
-      END DO
+          this%transformed_xvelocity = .FALSE.
+        END SELECT
+      END SELECT
       this%transformed_xvelocity = .FALSE.
     END IF
   END SUBROUTINE AddBackgroundVelocityX
@@ -1278,22 +1260,27 @@ CONTAINS
     !------------------------------------------------------------------------!
     REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX), &
                               INTENT(IN)    :: w
-    REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                              INTENT(INOUT) :: pvar,cvar
+    CLASS(marray_compound), INTENT(INOUT) ::  pvar,cvar
     !------------------------------------------------------------------------!
     INTEGER              :: i,j,k
     !------------------------------------------------------------------------!
     IF (this%transformed_yvelocity) THEN
-      DO k=Mesh%KGMIN,Mesh%KGMAX
-        DO j=Mesh%JGMIN,Mesh%JGMAX
-          DO i=Mesh%IGMIN,Mesh%IGMAX
-             pvar(i,j,k,this%YVELOCITY) = pvar(i,j,k,this%YVELOCITY) + w(i,k)
-             cvar(i,j,k,this%YMOMENTUM) = cvar(i,j,k,this%YMOMENTUM) &
-                                      + cvar(i,j,k,this%DENSITY)*w(i,k)
+      SELECT TYPE(p => pvar)
+      TYPE IS(statevector_eulerisotherm)
+        SELECT TYPE(c => cvar)
+        TYPE IS(statevector_eulerisotherm)
+          DO k=Mesh%KGMIN,Mesh%KGMAX
+            DO j=Mesh%JGMIN,Mesh%JGMAX
+              DO i=Mesh%IGMIN,Mesh%IGMAX
+                p%velocity%data4d(i,j,k,2) = p%velocity%data4d(i,j,k,2) + w(i,k)
+                c%momentum%data4d(i,j,k,2) = c%momentum%data4d(i,j,k,2) &
+                    + c%density%data3d(i,j,k)*w(i,k)
+              END DO
+            END DO
           END DO
-        END DO
-      END DO
-      this%transformed_yvelocity = .FALSE.
+          this%transformed_yvelocity = .FALSE.
+        END SELECT
+      END SELECT
     END IF
   END SUBROUTINE AddBackgroundVelocityY
 
@@ -1305,22 +1292,27 @@ CONTAINS
     !------------------------------------------------------------------------!
     REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX), &
                               INTENT(IN)    :: w
-    REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                              INTENT(INOUT) :: pvar,cvar
+    CLASS(marray_compound), INTENT(INOUT) ::  pvar,cvar
     !------------------------------------------------------------------------!
     INTEGER              :: i,j,k
     !------------------------------------------------------------------------!
     IF (this%transformed_zvelocity) THEN
-      DO k=Mesh%KGMIN,Mesh%KGMAX
-        DO j=Mesh%JGMIN,Mesh%JGMAX
-          DO i=Mesh%IGMIN,Mesh%IGMAX
-             pvar(i,j,k,this%ZVELOCITY) = pvar(i,j,k,this%ZVELOCITY) + w(i,j)
-             cvar(i,j,k,this%ZMOMENTUM) = cvar(i,j,k,this%ZMOMENTUM) &
-                                      + cvar(i,j,k,this%DENSITY)*w(i,j)
+      SELECT TYPE(p => pvar)
+      TYPE IS(statevector_eulerisotherm)
+        SELECT TYPE(c => cvar)
+        TYPE IS(statevector_eulerisotherm)
+          DO k=Mesh%KGMIN,Mesh%KGMAX
+            DO j=Mesh%JGMIN,Mesh%JGMAX
+              DO i=Mesh%IGMIN,Mesh%IGMAX
+                p%velocity%data4d(i,j,k,3) = p%velocity%data4d(i,j,k,3) + w(i,j)
+                c%momentum%data4d(i,j,k,3) = c%momentum%data4d(i,j,k,3) &
+                    + c%density%data3d(i,j,k)*w(i,j)
+              END DO
+            END DO
           END DO
-        END DO
-      END DO
-      this%transformed_zvelocity = .FALSE.
+          this%transformed_zvelocity = .FALSE.
+        END SELECT
+      END SELECT
     END IF
   END SUBROUTINE AddBackgroundVelocityZ
 
@@ -1332,22 +1324,27 @@ CONTAINS
     !------------------------------------------------------------------------!
     REAL,DIMENSION(Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX), &
                               INTENT(IN)    :: w
-    REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                              INTENT(INOUT) :: pvar,cvar
+    CLASS(marray_compound), INTENT(INOUT) ::  pvar,cvar
     !------------------------------------------------------------------------!
     INTEGER              :: i,j,k
     !------------------------------------------------------------------------!
     IF (.NOT.this%transformed_xvelocity) THEN
-      DO k=Mesh%KGMIN,Mesh%KGMAX
-        DO j=Mesh%JGMIN,Mesh%JGMAX
-          DO i=Mesh%IGMIN,Mesh%IGMAX
-            pvar(i,j,k,this%XVELOCITY) = pvar(i,j,k,this%XVELOCITY) - w(j,k)
-            cvar(i,j,k,this%XMOMENTUM) = cvar(i,j,k,this%XMOMENTUM) &
-                                     - cvar(i,j,k,this%DENSITY)*w(j,k)
+      SELECT TYPE(p => pvar)
+      TYPE IS(statevector_eulerisotherm)
+        SELECT TYPE(c => cvar)
+        TYPE IS(statevector_eulerisotherm)
+          DO k=Mesh%KGMIN,Mesh%KGMAX
+            DO j=Mesh%JGMIN,Mesh%JGMAX
+              DO i=Mesh%IGMIN,Mesh%IGMAX
+                p%velocity%data4d(i,j,k,1) = p%velocity%data4d(i,j,k,1) - w(j,k)
+                c%momentum%data4d(i,j,k,1) = c%momentum%data4d(i,j,k,1) &
+                    - c%density%data3d(i,j,k)*w(j,k)
+              END DO
+            END DO
           END DO
-        END DO
-      END DO
-      this%transformed_xvelocity = .TRUE.
+          this%transformed_xvelocity = .TRUE.
+        END SELECT
+      END SELECT
     END IF
   END SUBROUTINE SubtractBackgroundVelocityX
 
@@ -1359,22 +1356,27 @@ CONTAINS
     !------------------------------------------------------------------------!
     REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX), &
                               INTENT(IN)    :: w
-    REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                              INTENT(INOUT) :: pvar,cvar
+    CLASS(marray_compound), INTENT(INOUT) ::  pvar,cvar
     !------------------------------------------------------------------------!
     INTEGER              :: i,j,k
     !------------------------------------------------------------------------!
     IF (.NOT.this%transformed_yvelocity) THEN
-      DO k=Mesh%KGMIN,Mesh%KGMAX
-        DO j=Mesh%JGMIN,Mesh%JGMAX
-          DO i=Mesh%IGMIN,Mesh%IGMAX
-            pvar(i,j,k,this%YVELOCITY) = pvar(i,j,k,this%YVELOCITY) - w(i,k)
-            cvar(i,j,k,this%YMOMENTUM) = cvar(i,j,k,this%YMOMENTUM) &
-                                     - cvar(i,j,k,this%DENSITY)*w(i,k)
+      SELECT TYPE(p => pvar)
+      TYPE IS(statevector_eulerisotherm)
+        SELECT TYPE(c => cvar)
+        TYPE IS(statevector_eulerisotherm)
+          DO k=Mesh%KGMIN,Mesh%KGMAX
+            DO j=Mesh%JGMIN,Mesh%JGMAX
+              DO i=Mesh%IGMIN,Mesh%IGMAX
+                p%velocity%data4d(i,j,k,2) = p%velocity%data4d(i,j,k,2) - w(i,k)
+                c%momentum%data4d(i,j,k,2) = c%momentum%data4d(i,j,k,2) &
+                    - c%density%data3d(i,j,k)*w(i,k)
+              END DO
+            END DO
           END DO
-        END DO
-      END DO
-      this%transformed_yvelocity = .TRUE.
+          this%transformed_yvelocity = .TRUE.
+        END SELECT
+      END SELECT
     END IF
   END SUBROUTINE SubtractBackgroundVelocityY
 
@@ -1386,22 +1388,27 @@ CONTAINS
     !------------------------------------------------------------------------!
     REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX), &
                               INTENT(IN)    :: w
-    REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                              INTENT(INOUT) :: pvar,cvar
+    CLASS(marray_compound), INTENT(INOUT) ::  pvar,cvar
     !------------------------------------------------------------------------!
     INTEGER              :: i,j,k
     !------------------------------------------------------------------------!
     IF (.NOT.this%transformed_zvelocity) THEN
-      DO k=Mesh%KGMIN,Mesh%KGMAX
-        DO j=Mesh%JGMIN,Mesh%JGMAX
-          DO i=Mesh%IGMIN,Mesh%IGMAX
-            pvar(i,j,k,this%ZVELOCITY) = pvar(i,j,k,this%ZVELOCITY) - w(j,k)
-            cvar(i,j,k,this%ZMOMENTUM) = cvar(i,j,k,this%ZMOMENTUM) &
-                                     - cvar(i,j,k,this%DENSITY)*w(j,k)
+      SELECT TYPE(p => pvar)
+      TYPE IS(statevector_eulerisotherm)
+        SELECT TYPE(c => cvar)
+        TYPE IS(statevector_eulerisotherm)
+          DO k=Mesh%KGMIN,Mesh%KGMAX
+            DO j=Mesh%JGMIN,Mesh%JGMAX
+              DO i=Mesh%IGMIN,Mesh%IGMAX
+                p%velocity%data4d(i,j,k,3) = p%velocity%data4d(i,j,k,3) - w(i,j)
+                c%momentum%data4d(i,j,k,3) = c%momentum%data4d(i,j,k,3) &
+                    - c%density%data3d(i,j,k)*w(i,j)
+              END DO
+            END DO
           END DO
-        END DO
-      END DO
-      this%transformed_zvelocity = .TRUE.
+          this%transformed_zvelocity = .TRUE.
+        END SELECT
+      END SELECT
     END IF
   END SUBROUTINE SubtractBackgroundVelocityZ
 
@@ -1417,31 +1424,34 @@ CONTAINS
   !!     S_\mathrm{Fargo} = -\varrho u_\xi \frac{1}{h_\xi} \partial_\xi \left(h_\xi w\right)
   !!                      = -\varrho u_\xi w \,\partial_\xi \left(\ln{|h_\xi w|}\right)
   !! \f]
-  PURE SUBROUTINE FargoSources(this,Mesh,w,pvar,cvar,sterm)
+  PURE SUBROUTINE AddFargoSources(this,Mesh,w,pvar,cvar,sterm)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
-    CLASS(physics_eulerisotherm), INTENT(IN)    :: this
-    CLASS(mesh_base),         INTENT(IN)    :: Mesh
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX), &
-                              INTENT(IN)    :: w
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                              INTENT(IN)    :: pvar,cvar
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                              INTENT(INOUT) :: sterm
+    CLASS(physics_eulerisotherm), INTENT(IN) :: this
+    CLASS(mesh_base), INTENT(IN)             :: Mesh
+    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX), INTENT(IN) &
+                                             :: w
+    CLASS(marray_compound), INTENT(INOUT)    :: pvar,cvar,sterm
     !------------------------------------------------------------------------!
     INTEGER           :: i,j,k
     !------------------------------------------------------------------------!
-    DO k=Mesh%KMIN,Mesh%KMAX
-      DO j=Mesh%JMIN,Mesh%JMAX
-        DO i=Mesh%IMIN,Mesh%IMAX
-!            sterm(i,j,this%XMOMENTUM) = cvar(i,j,this%YMOMENTUM) * w(i) &
-!                   * Mesh%cyxy%bcenter(i,j)
-           sterm(i,j,k,this%YMOMENTUM) = -cvar(i,j,k,this%XMOMENTUM) &
-                  * 0.5 * (w(i+1,k)-w(i-1,k)) / Mesh%dlx%data3d(i,j,k)
+    SELECT TYPE(c => cvar)
+    CLASS IS(statevector_eulerisotherm)
+      SELECT TYPE(s => sterm)
+      CLASS IS(statevector_eulerisotherm)
+        DO k=Mesh%KMIN,Mesh%KMAX
+          DO j=Mesh%JMIN,Mesh%JMAX
+            DO i=Mesh%IMIN,Mesh%IMAX
+              ! ATTENTION: fargo sources are added to the given sterm
+              s%momentum%data4d(i,j,k,2) = s%momentum%data4d(i,j,k,2) &
+                - c%momentum%data4d(i,j,k,1) * 0.5 * (w(i+1,k)-w(i-1,k)) &
+                / Mesh%dlx%data3d(i,j,k)
+            END DO
+          END DO
         END DO
-      END DO
-    END DO
-  END SUBROUTINE FargoSources
+      END SELECT
+    END SELECT
+  END SUBROUTINE AddFargoSources
 
   !> return masks for reflecting boundaries
   !!
@@ -1551,227 +1561,460 @@ CONTAINS
     END IF
   END SUBROUTINE AxisMasks
 
-  PURE SUBROUTINE CalculateCharSystemX(this,Mesh,i,dir,pvar,lambda,xvar)
+  PURE SUBROUTINE CalculateCharSystemX(this,Mesh,i1,i2,pvar,lambda,xvar)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
-    CLASS(Physics_eulerisotherm), INTENT(IN):: this
-    CLASS(Mesh_base), INTENT(IN)   :: Mesh
-    INTEGER, INTENT(IN)          :: i,dir
-    REAL, INTENT(IN), &
-      DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) :: pvar
-    REAL, &
-      DIMENSION(Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM),INTENT(OUT) :: lambda
-    REAL, INTENT(OUT), &
-      DIMENSION(Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) :: xvar
+    CLASS(physics_eulerisotherm), INTENT(IN)    :: this
+    CLASS(mesh_base),             INTENT(IN)    :: Mesh
+    INTEGER,                      INTENT(IN)    :: i1,i2
+    CLASS(marray_compound),       INTENT(INOUT) :: pvar
+    REAL, DIMENSION(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%VNUM), &
+                                  INTENT(OUT)   :: lambda,xvar
     !------------------------------------------------------------------------!
-    INTEGER           :: i1,i2
+    INTEGER           :: iL,iR
     !------------------------------------------------------------------------!
-    ! compute eigenvalues at i
-    CALL SetEigenValues( &
-          this%bccsound%data3d(i,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
-          pvar(i,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%XVELOCITY), &
-          lambda(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
-          lambda(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
-          lambda(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,3))
-    ! compute characteristic variables using cell mean values of adjacent
-    ! cells to calculate derivatives and the isothermal speed of sound
-    ! at the intermediate cell face
-    i1 = i + SIGN(1,dir) ! left handed if dir<0 and right handed otherwise
-    i2 = MAX(i,i1)
-    i1 = MIN(i,i1)
-    CALL SetCharVars( &
-          this%fcsound%data4d(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,WEST), &
-          pvar(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%DENSITY), &
-          pvar(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%DENSITY), &
-          pvar(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%XVELOCITY), &
-          pvar(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%XVELOCITY), &
-          pvar(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%YVELOCITY), &
-          pvar(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%YVELOCITY), &
-          xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
-          xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
-          xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,3))
+    SELECT TYPE(p => pvar)
+    TYPE IS(statevector_eulerisotherm)
+      iL = MIN(i1,i2)
+      iR = MAX(i1,i2)
+      SELECT CASE(this%VDIM)
+      CASE(1) ! 1D
+        ! compute eigenvalues at i1
+        CALL SetEigenValues1d( &
+              this%bccsound%data3d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              lambda(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              lambda(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2))
+        ! compute characteristic variables using cell mean values of adjacent
+        ! cells to calculate derivatives and the isothermal speed of sound
+        ! at the intermediate cell face
+        CALL SetCharVars1d( &
+              this%fcsound%data4d(iR,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,WEST), &
+              p%density%data3d(iL,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%density%data3d(iR,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(iL,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              p%velocity%data4d(iR,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2))
+      CASE(2) ! 2D
+        ! compute eigenvalues at i1
+        CALL SetEigenValues2d( &
+              this%bccsound%data3d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              lambda(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              lambda(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              lambda(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,3))
+        ! compute characteristic variables using cell mean values of adjacent
+        ! cells to calculate derivatives and the isothermal speed of sound
+        ! at the intermediate cell face
+        CALL SetCharVars2d( &
+              this%fcsound%data4d(iR,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,WEST), &
+              p%density%data3d(iL,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%density%data3d(iR,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(iL,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              p%velocity%data4d(iR,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              p%velocity%data4d(iL,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              p%velocity%data4d(iR,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,3))
+      CASE(3) ! 3D
+        ! compute eigenvalues at i1
+        CALL SetEigenValues3d( &
+              this%bccsound%data3d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              lambda(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              lambda(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              lambda(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,3), &
+              lambda(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,4))
+        ! compute characteristic variables using cell mean values of adjacent
+        ! cells to calculate derivatives and the isothermal speed of sound
+        ! at the intermediate cell face
+        CALL SetCharVars3d( &
+              this%fcsound%data4d(iR,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,WEST), &
+              p%density%data3d(iL,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%density%data3d(iR,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(iL,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              p%velocity%data4d(iR,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              p%velocity%data4d(iL,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              p%velocity%data4d(iR,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              p%velocity%data4d(iL,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,3), &
+              p%velocity%data4d(iR,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,3), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,3), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,4))
+      END SELECT
+    END SELECT
   END SUBROUTINE CalculateCharSystemX
 
 
-  PURE SUBROUTINE CalculateCharSystemY(this,Mesh,j,dir,pvar,lambda,xvar)
+  PURE SUBROUTINE CalculateCharSystemY(this,Mesh,j1,j2,pvar,lambda,xvar)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
-    CLASS(Physics_eulerisotherm),INTENT(IN) :: this
-    CLASS(Mesh_base),INTENT(IN)    :: Mesh
-    INTEGER,INTENT(IN)             :: j,dir
-    REAL, INTENT(IN), &
-       DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) :: pvar
-    REAL, &
-       DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM),INTENT(OUT) :: lambda
-    REAL, INTENT(OUT), &
-       DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) :: xvar
+    CLASS(physics_eulerisotherm), INTENT(IN)    :: this
+    CLASS(mesh_base),             INTENT(IN)    :: Mesh
+    INTEGER,                      INTENT(IN)    :: j1,j2
+    CLASS(marray_compound),       INTENT(INOUT) :: pvar
+    REAL, DIMENSION(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,this%VNUM), &
+                                  INTENT(OUT)   :: lambda,xvar
     !------------------------------------------------------------------------!
-    INTEGER           :: j1,j2
+    INTEGER           :: jL,jR,vn,vt
     !------------------------------------------------------------------------!
-    ! compute eigenvalues at j
-    CALL SetEigenValues(this%bccsound%data3d(Mesh%IMIN:Mesh%IMAX,j,Mesh%KMIN:Mesh%KMAX), &
-          pvar(Mesh%IMIN:Mesh%IMAX,j,Mesh%KMIN:Mesh%KMAX,this%YVELOCITY), &
-          lambda(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
-          lambda(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2), &
-          lambda(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,3))
-    ! compute characteristic variables using cell mean values of adjacent
-    ! cells to calculate derivatives and the isothermal speed of sound
-    ! at the intermediate cell face
-    j1 = j + SIGN(1,dir) ! left handed if dir<0 and right handed otherwise
-    j2 = MAX(j,j1)
-    j1 = MIN(j,j1)
-    CALL SetCharVars(this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX,SOUTH), &
-          pvar(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,this%DENSITY), &
-          pvar(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX,this%DENSITY), &
-          pvar(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,this%YVELOCITY), &
-          pvar(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX,this%YVELOCITY), &
-          pvar(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,this%XVELOCITY), &
-          pvar(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX,this%XVELOCITY), &
-          xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
-          xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2), &
-          xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,3))
+    SELECT TYPE(p => pvar)
+    TYPE IS(statevector_eulerisotherm)
+      jL = MIN(j1,j2)
+      jR = MAX(j1,j2)
+      SELECT CASE(this%VDIM)
+      CASE(1) ! 1D
+        ! compute eigenvalues at j
+        CALL SetEigenValues1d(this%bccsound%data3d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,1), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2))
+        ! compute characteristic variables using cell mean values of adjacent
+        ! cells to calculate derivatives and the isothermal speed of sound
+        ! at the intermediate cell face
+        CALL SetCharVars1d(this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,jR,Mesh%KMIN:Mesh%KMAX,SOUTH), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,jL,Mesh%KMIN:Mesh%KMAX), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,jR,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,jL,Mesh%KMIN:Mesh%KMAX,1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,jR,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2))
+      CASE(2) ! 2D
+        ! check which velocity component is along y-direction
+        SELECT CASE(Mesh%VECTOR_COMPONENTS)
+        CASE(IOR(VECTOR_X,VECTOR_Y)) ! 2D velocities in x-y-plane
+          vt = 1
+          vn = 2
+        CASE(IOR(VECTOR_Y,VECTOR_Z)) ! 2D velocities in y-z-plane
+          vt = 2
+          vn = 1
+        CASE DEFAULT
+          ! this should not happen
+          RETURN
+        END SELECT
+        ! compute eigenvalues at j
+        CALL SetEigenValues2d(this%bccsound%data3d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,vn), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,3))
+        ! compute characteristic variables using cell mean values of adjacent
+        ! cells to calculate derivatives and the isothermal speed of sound
+        ! at the intermediate cell face
+        CALL SetCharVars2d(this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,jR,Mesh%KMIN:Mesh%KMAX,SOUTH), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,jL,Mesh%KMIN:Mesh%KMAX), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,jR,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,jL,Mesh%KMIN:Mesh%KMAX,vn), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,jR,Mesh%KMIN:Mesh%KMAX,vn), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,jL,Mesh%KMIN:Mesh%KMAX,vt), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,jR,Mesh%KMIN:Mesh%KMAX,vt), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,3))
+      CASE(3) ! 3D
+        ! compute eigenvalues at j
+        CALL SetEigenValues3d(this%bccsound%data3d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,2), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,3), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,4))
+        ! compute characteristic variables using cell mean values of adjacent
+        ! cells to calculate derivatives and the isothermal speed of sound
+        ! at the intermediate cell face
+        CALL SetCharVars3d(this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,jR,Mesh%KMIN:Mesh%KMAX,SOUTH), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,jL,Mesh%KMIN:Mesh%KMAX), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,jR,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,jL,Mesh%KMIN:Mesh%KMAX,2), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,jR,Mesh%KMIN:Mesh%KMAX,2), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,jL,Mesh%KMIN:Mesh%KMAX,1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,jR,Mesh%KMIN:Mesh%KMAX,1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,jL,Mesh%KMIN:Mesh%KMAX,3), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,jR,Mesh%KMIN:Mesh%KMAX,3), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,3), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,4))
+      END SELECT
+    END SELECT
   END SUBROUTINE CalculateCharSystemY
 
 
-  PURE SUBROUTINE CalculateCharSystemZ(this,Mesh,k,dir,pvar,lambda,xvar)
+  PURE SUBROUTINE CalculateCharSystemZ(this,Mesh,k1,k2,pvar,lambda,xvar)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
-    CLASS(Physics_eulerisotherm), INTENT(IN):: this
-    CLASS(Mesh_base), INTENT(IN)   :: Mesh
-    INTEGER, INTENT(IN)          :: k,dir
-    REAL, INTENT(IN), &
-      DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) :: pvar
-    REAL, &
-       DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,this%VNUM),INTENT(OUT) :: lambda
-    REAL, INTENT(OUT), & 
-     DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,this%VNUM) :: xvar
+    CLASS(physics_eulerisotherm), INTENT(IN)    :: this
+    CLASS(mesh_base),             INTENT(IN)    :: Mesh
+    INTEGER,                      INTENT(IN)    :: k1,k2
+    CLASS(marray_compound),       INTENT(INOUT) :: pvar
+    REAL, DIMENSION(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,this%VNUM), &
+                                  INTENT(OUT)   :: lambda,xvar
     !------------------------------------------------------------------------!
-!     INTEGER           :: k1,k2
+    INTEGER           :: kL,kR
     !------------------------------------------------------------------------!
-    !TODO: Should not exist in 2D !
-    ! compute eigenvalues at k
-!    CALL SetEigenValues(this%bccsound%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k), &
-!          pvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k,this%ZVELOCITY), &
-!          lambda(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,1), &
-!          lambda(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,2), &
-!          lambda(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,3))
-!    ! compute characteristic variables using cell mean values of adjacent
-!    ! cells to calculate derivatives and the isothermal speed of sound
-!    ! at the intermediate cell face
-!    k1 = k + SIGN(1,dir) ! left handed if dir<0 and right handed otherwise
-!    k2 = MAX(k,k1)
-!    k1 = MIN(k,k1)
-!    CALL SetCharVars(this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2,BOTTOM), &
-!          pvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,this%DENSITY), &
-!          pvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2,this%DENSITY), &
-!          pvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,this%YVELOCITY), &
-!          pvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2,this%YVELOCITY), &
-!          pvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,this%XVELOCITY), &
-!          pvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2,this%XVELOCITY), &
-!          xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
-!          xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2), &
-!          xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,3))
+    SELECT TYPE(p => pvar)
+    TYPE IS(statevector_eulerisotherm)
+      kL = MIN(k1,k2)
+      kR = MAX(k1,k2)
+      SELECT CASE(this%VDIM)
+      CASE(1) ! 1D
+        ! compute eigenvalues at k
+        CALL SetEigenValues1d(this%bccsound%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,1), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,1), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,2))
+        ! compute characteristic variables using cell mean values of adjacent
+        ! cells to calculate derivatives and the isothermal speed of sound
+        ! at the intermediate cell face
+        CALL SetCharVars1d(this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kR,BOTTOM), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kL), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kR), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kL,1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kR,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2))
+      CASE(2) ! 2D
+        ! compute eigenvalues at k
+        CALL SetEigenValues2d(this%bccsound%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,2), & ! 2nd component is vz
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,1), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,2), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,3))
+        ! compute characteristic variables using cell mean values of adjacent
+        ! cells to calculate derivatives and the isothermal speed of sound
+        ! at the intermediate cell face
+        CALL SetCharVars2d(this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kR,BOTTOM), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kL), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kR), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kL,2), & ! 2nd component is vz
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kR,2), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kL,1), & ! 1st component: vx or vy
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kR,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,3))
+      CASE(3) ! 3D
+        ! compute eigenvalues at k
+        CALL SetEigenValues3d(this%bccsound%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,3), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,1), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,2), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,3), &
+              lambda(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,4))
+        ! compute characteristic variables using cell mean values of adjacent
+        ! cells to calculate derivatives and the isothermal speed of sound
+        ! at the intermediate cell face
+        CALL SetCharVars3d(this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kR,BOTTOM), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kL), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kR), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kL,3), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kR,3), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kL,1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kR,1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kL,2), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,kR,2), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,3), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,4))
+      END SELECT
+    END SELECT
   END SUBROUTINE CalculateCharSystemZ
 
-  PURE SUBROUTINE CalculateBoundaryDataX(this,Mesh,i1,dir,xvar,pvar)
+  PURE SUBROUTINE CalculateBoundaryDataX(this,Mesh,i1,i2,xvar,pvar)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
-    CLASS(Physics_eulerisotherm), INTENT(IN):: this
-    CLASS(Mesh_base), INTENT(IN)   :: Mesh
-    INTEGER, INTENT(IN)          :: i1,dir
-    REAL, INTENT(IN), &
-      DIMENSION(Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) :: xvar
-    REAL, INTENT(INOUT), &
-      DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) :: pvar
+    CLASS(physics_eulerisotherm), INTENT(IN)    :: this
+    CLASS(mesh_base),             INTENT(IN)    :: Mesh
+    INTEGER,                      INTENT(IN)    :: i1,i2
+    REAL, DIMENSION(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%VNUM), &
+                                  INTENT(IN)    :: xvar
+    CLASS(marray_compound),       INTENT(INOUT) :: pvar
     !------------------------------------------------------------------------!
-    INTEGER           :: i2,fidx
+    INTEGER           :: fidx
     !------------------------------------------------------------------------!
-    i2 = i1 + SIGN(1,dir)  ! i +/- 1 depending on the sign of dir
     IF (i2.LT.i1) THEN
        fidx = WEST
     ELSE
        fidx = EAST
     END IF
-    CALL SetBoundaryData( &
-          this%fcsound%data4d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KGMIN:Mesh%KGMAX,fidx), &
-          1.0*SIGN(1,dir), &
-          pvar(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%DENSITY), &
-          pvar(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%XVELOCITY), &
-          pvar(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%YVELOCITY), &
-          xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
-          xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
-          xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,3), &
-          pvar(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%DENSITY), &
-          pvar(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%XVELOCITY), &
-          pvar(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%YVELOCITY))
+    SELECT TYPE(p => pvar)
+    TYPE IS(statevector_eulerisotherm)
+      SELECT CASE(this%VDIM)
+      CASE(1) ! 1D
+        CALL SetBoundaryData1d(i2-i1, &
+              this%fcsound%data4d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,fidx), &
+              p%density%data3d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              p%density%data3d(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1))
+      CASE(2) ! 2D
+        CALL SetBoundaryData2d(i2-i1, &
+              this%fcsound%data4d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,fidx), &
+              p%density%data3d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              p%velocity%data4d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,3), &
+              p%density%data3d(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              p%velocity%data4d(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2))
+      CASE(3) ! 3D
+        CALL SetBoundaryData3d(i2-i1, &
+              this%fcsound%data4d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,fidx), &
+              p%density%data3d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              p%velocity%data4d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              p%velocity%data4d(i1,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,3), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,3), &
+              xvar(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,4), &
+              p%density%data3d(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              p%velocity%data4d(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              p%velocity%data4d(i2,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,3))
+      END SELECT
+    END SELECT
   END SUBROUTINE CalculateBoundaryDataX
 
 
-  PURE SUBROUTINE CalculateBoundaryDataY(this,Mesh,j1,dir,xvar,pvar)
+  PURE SUBROUTINE CalculateBoundaryDataY(this,Mesh,j1,j2,xvar,pvar)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
-    CLASS(Physics_eulerisotherm), INTENT(IN):: this
-    CLASS(Mesh_base), INTENT(IN)   :: Mesh
-    INTEGER, INTENT(IN)          :: j1,dir
-    REAL, INTENT(IN), &
-      DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) :: xvar
-    REAL, INTENT(INOUT), &
-      DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) :: pvar
+    CLASS(physics_eulerisotherm), INTENT(IN)    :: this
+    CLASS(mesh_base),             INTENT(IN)    :: Mesh
+    INTEGER,                      INTENT(IN)    :: j1,j2
+    REAL, DIMENSION(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,this%VNUM), &
+                                  INTENT(IN)    :: xvar
+    CLASS(marray_compound),       INTENT(INOUT) :: pvar
     !------------------------------------------------------------------------!
-    INTEGER           :: j2,fidx
+    INTEGER           :: fidx,vt,vn
     !------------------------------------------------------------------------!
-    j2 = j1 + SIGN(1,dir)  ! j +/- 1 depending on the sign of dir
     IF (j2.LT.j1) THEN
        fidx = SOUTH
     ELSE
        fidx = NORTH
     END IF
-    CALL SetBoundaryData( &
-          this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,fidx), &
-          1.0*SIGN(1,dir), &
-          pvar(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,this%DENSITY), &
-          pvar(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,this%YVELOCITY), &
-          pvar(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,this%XVELOCITY), &
-          xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
-          xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2), &
-          xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,3), &
-          pvar(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX,this%DENSITY), &
-          pvar(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX,this%YVELOCITY), &
-          pvar(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX,this%XVELOCITY))
+    SELECT TYPE(p => pvar)
+    TYPE IS(statevector_eulerisotherm)
+      SELECT CASE(this%VDIM)
+      CASE(1) ! 1D
+        CALL SetBoundaryData1d(j2-j1, &
+              this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,fidx), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX,1))
+      CASE(2) ! 2D
+        ! check which velocity component is along y-direction
+        SELECT CASE(Mesh%VECTOR_COMPONENTS)
+        CASE(IOR(VECTOR_X,VECTOR_Y)) ! 2D velocities in x-y-plane
+          vt = 1
+          vn = 2
+        CASE(IOR(VECTOR_Y,VECTOR_Z)) ! 2D velocities in y-z-plane
+          vt = 2
+          vn = 1
+        CASE DEFAULT
+          ! this should not happen
+          RETURN
+        END SELECT
+        CALL SetBoundaryData2d(j2-j1, &
+              this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,fidx), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,vn), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,vt), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,3), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX,vn), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX,vt))
+      CASE(3) ! 3D
+        CALL SetBoundaryData3d(j2-j1, &
+              this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,fidx), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,2), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j1,Mesh%KMIN:Mesh%KMAX,3), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,2), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,3), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,4), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX,2), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX,1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,j2,Mesh%KMIN:Mesh%KMAX,3))
+      END SELECT
+    END SELECT
   END SUBROUTINE CalculateBoundaryDataY
 
-  PURE SUBROUTINE CalculateBoundaryDataZ(this,Mesh,k1,dir,xvar,pvar)
+  PURE SUBROUTINE CalculateBoundaryDataZ(this,Mesh,k1,k2,xvar,pvar)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
-    CLASS(Physics_eulerisotherm), INTENT(IN):: this
-    CLASS(Mesh_base), INTENT(IN)   :: Mesh
-    INTEGER, INTENT(IN)          :: k1,dir
-    REAL, INTENT(IN), &
-      DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,this%VNUM) :: xvar
-    REAL, INTENT(INOUT), &
-      DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) :: pvar
+    CLASS(physics_eulerisotherm), INTENT(IN)    :: this
+    CLASS(mesh_base),             INTENT(IN)    :: Mesh
+    INTEGER,                      INTENT(IN)    :: k1,k2
+    REAL, DIMENSION(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,this%VNUM), &
+                                  INTENT(IN)    :: xvar
+    CLASS(marray_compound),       INTENT(INOUT) :: pvar
     !------------------------------------------------------------------------!
-!     INTEGER           :: k2,fidx
+    INTEGER           :: fidx
     !------------------------------------------------------------------------!
-    !TODO: Should not exist in 2D !
-    !    k2 = k1 + SIGN(1,dir)  ! j +/- 1 depending on the sign of dir
-!    IF (k2.LT.k1) THEN
-!       fidx = BOTTOM
-!    ELSE
-!       fidx = TOP
-!    END IF
-!    CALL SetBoundaryData( &
-!          this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,fidx), &
-!          1.0*SIGN(1,dir), &
-!          pvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,this%DENSITY), &
-!          pvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,this%YVELOCITY), &
-!          pvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,this%XVELOCITY), &
-!          xvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,1), &
-!          xvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,2), &
-!          xvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,3), &
-!          pvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2,this%DENSITY), &
-!          pvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2,this%YVELOCITY), &
-!          pvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2,this%XVELOCITY))
+    IF (k2.LT.k1) THEN
+      fidx = BOTTOM
+    ELSE
+      fidx = TOP
+    END IF
+    SELECT TYPE(p => pvar)
+    TYPE IS(statevector_eulerisotherm)
+      SELECT CASE(this%VDIM)
+      CASE(1) ! 1D
+        CALL SetBoundaryData1d(k2-k1, &
+              this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,fidx), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,2), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2,1))
+      CASE(2) ! 2D
+        CALL SetBoundaryData2d(k2-k1, &
+              this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,fidx), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,2), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,2), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,3), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2,2), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2,1))
+      CASE(3) ! 3D
+        CALL SetBoundaryData3d(k2-k1, &
+              this%fcsound%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,fidx), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,3), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k1,2), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,1), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,2), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,3), &
+              xvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,4), &
+              p%density%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2,3), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2,1), &
+              p%velocity%data4d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,k2,2))
+      END SELECT
+    END SELECT
   END SUBROUTINE CalculateBoundaryDataZ
 
   !> \public Destructor of the physics_eulerisotherm class
@@ -1952,7 +2195,17 @@ CONTAINS
   END SUBROUTINE SetWaveSpeeds
 
   !> \private compute all eigenvalues
-  ELEMENTAL SUBROUTINE SetEigenValues(cs,v,l1,l2,l3)
+  ELEMENTAL SUBROUTINE SetEigenValues1d(cs,v,l1,l2)
+    IMPLICIT NONE
+    !------------------------------------------------------------------------!
+    REAL, INTENT(IN)  :: cs,v
+    REAL, INTENT(OUT) :: l1,l2
+    !------------------------------------------------------------------------!
+    l1 = v - cs
+    l2 = v + cs
+  END SUBROUTINE SetEigenValues1d
+
+  ELEMENTAL SUBROUTINE SetEigenValues2d(cs,v,l1,l2,l3)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
     REAL, INTENT(IN)  :: cs,v
@@ -1961,7 +2214,19 @@ CONTAINS
     l1 = v - cs
     l2 = v
     l3 = v + cs
-  END SUBROUTINE SetEigenValues
+  END SUBROUTINE SetEigenValues2d
+
+  ELEMENTAL SUBROUTINE SetEigenValues3d(cs,v,l1,l2,l3,l4)
+    IMPLICIT NONE
+    !------------------------------------------------------------------------!
+    REAL, INTENT(IN)  :: cs,v
+    REAL, INTENT(OUT) :: l1,l2,l3,l4
+    !------------------------------------------------------------------------!
+    l1 = v - cs
+    l2 = v
+    l3 = v
+    l4 = v + cs
+  END SUBROUTINE SetEigenValues3d
 
   !> \private set mass and 1D momentum flux for transport along the 1st dimension
   ELEMENTAL SUBROUTINE SetFlux1d(cs,rho,u,mu,f1,f2)
@@ -2072,35 +2337,81 @@ CONTAINS
   END SUBROUTINE Prim2Cons3d
 
   !> \private compute characteristic variables using adjacent primitve states
-  ELEMENTAL SUBROUTINE SetCharVars(cs,rho1,rho2,u1,u2,v1,v2,&
-       xvar1,xvar2,xvar3)
+  ELEMENTAL SUBROUTINE SetCharVars1d(cs,rho1,rho2,u1,u2,xvar1,xvar2)
+    IMPLICIT NONE
+    !------------------------------------------------------------------------!
+    REAL, INTENT(IN)  :: cs,rho1,rho2,u1,u2
+    REAL, INTENT(OUT) :: xvar1,xvar2
+    !------------------------------------------------------------------------!
+    REAL :: dlnrho,ducs
+    !------------------------------------------------------------------------!
+    dlnrho = LOG(rho2/rho1)
+    ducs = (u2-u1)/cs
+    ! characteristic variables
+    xvar1 = dlnrho - ducs
+    xvar2 = dlnrho + ducs
+  END SUBROUTINE SetCharVars1d
+
+  !> \private compute characteristic variables using adjacent primitve states
+  ELEMENTAL SUBROUTINE SetCharVars2d(cs,rho1,rho2,u1,u2,v1,v2,xvar1,xvar2,xvar3)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
     REAL, INTENT(IN)  :: cs,rho1,rho2,u1,u2,v1,v2
     REAL, INTENT(OUT) :: xvar1,xvar2,xvar3
     !------------------------------------------------------------------------!
-    REAL :: dlnrho,du
-    !------------------------------------------------------------------------!
-    dlnrho = LOG(rho2/rho1)
-    du = u2-u1
-    ! characteristic variables
-    xvar1 = cs*dlnrho - du
+    CALL SetCharVars1d(cs,rho1,rho2,u1,u2,xvar1,xvar3)
     xvar2 = v2-v1
-    xvar3 = cs*dlnrho + du
-  END SUBROUTINE SetCharVars
+  END SUBROUTINE SetCharVars2d
 
-  !> \private extrapolate boundary values using primitve and characteristic variables
-  ELEMENTAL SUBROUTINE SetBoundaryData(cs,dir,rho1,u1,v1,xvar1,xvar2, &
-       xvar3,rho2,u2,v2)
+  !> \private compute characteristic variables using adjacent primitve states
+  ELEMENTAL SUBROUTINE SetCharVars3d(cs,rho1,rho2,u1,u2,v1,v2,w1,w2,&
+                                     xvar1,xvar2,xvar3,xvar4)
     IMPLICIT NONE
     !------------------------------------------------------------------------!
-    REAL, INTENT(IN)  :: cs,dir,rho1,u1,v1,xvar1,xvar2,xvar3
+    REAL, INTENT(IN)  :: cs,rho1,rho2,u1,u2,v1,v2,w1,w2
+    REAL, INTENT(OUT) :: xvar1,xvar2,xvar3,xvar4
+    !------------------------------------------------------------------------!
+    REAL :: dlnrho,du
+    !------------------------------------------------------------------------!
+    CALL SetCharVars2d(cs,rho1,rho2,u1,u2,v1,v2,xvar1,xvar2,xvar4)
+    xvar3 = w2-w1
+  END SUBROUTINE SetCharVars3d
+
+  !> \private extrapolate boundary values using primitve and characteristic variables
+  ELEMENTAL SUBROUTINE SetBoundaryData1d(delta,cs,rho1,u1,xvar1,xvar2,rho2,u2)
+    IMPLICIT NONE
+    !------------------------------------------------------------------------!
+    INTEGER, INTENT(IN) :: delta
+    REAL, INTENT(IN)  :: cs,rho1,u1,xvar1,xvar2
+    REAL, INTENT(OUT) :: rho2,u2
+    !------------------------------------------------------------------------!
+    rho2 = rho1 * EXP(delta*0.5*(xvar2+xvar1))
+    u2   = u1 + delta*0.5*cs*(xvar2-xvar1)
+  END SUBROUTINE SetBoundaryData1d
+
+  ELEMENTAL SUBROUTINE SetBoundaryData2d(delta,cs,rho1,u1,v1,xvar1,xvar2,xvar3, &
+                                         rho2,u2,v2)
+    IMPLICIT NONE
+    !------------------------------------------------------------------------!
+    INTEGER, INTENT(IN) :: delta
+    REAL, INTENT(IN)  :: cs,rho1,u1,v1,xvar1,xvar2,xvar3
     REAL, INTENT(OUT) :: rho2,u2,v2
     !------------------------------------------------------------------------!
-    rho2 = rho1 * EXP(dir*0.5*(xvar3+xvar1)/cs)
-    u2   = u1 + dir*0.5*(xvar3-xvar1)
-    v2   = v1 + dir*xvar2
-  END SUBROUTINE SetBoundaryData
+    CALL SetBoundaryData1d(delta,cs,rho1,u1,xvar1,xvar3,rho2,u2)
+    v2   = v1 + delta*xvar2
+  END SUBROUTINE SetBoundaryData2d
+
+  ELEMENTAL SUBROUTINE SetBoundaryData3d(delta,cs,rho1,u1,v1,w1,xvar1,xvar2,xvar3, &
+                                         xvar4,rho2,u2,v2,w2)
+    IMPLICIT NONE
+    !------------------------------------------------------------------------!
+    INTEGER, INTENT(IN) :: delta
+    REAL, INTENT(IN)  :: cs,rho1,u1,v1,w1,xvar1,xvar2,xvar3,xvar4
+    REAL, INTENT(OUT) :: rho2,u2,v2,w2
+    !------------------------------------------------------------------------!
+    CALL SetBoundaryData2d(delta,cs,rho1,u1,v1,xvar1,xvar2,xvar4,rho2,u2,v2)
+    w2   = w1 + delta*xvar3
+  END SUBROUTINE SetBoundaryData3d
 
   !> geometrical momentum source terms
   !! P is the either isothermal pressure rho*cs**2 or the real pressure.
@@ -2108,7 +2419,7 @@ CONTAINS
   !! \attention These elemental functions exist multiple times for performance
   !!  reasons (inlining). Please keep this in mind for changes.
   !!  Other modules with this function:
-  !!      - physics_eulerisotherm_mod
+  !!      - physics_euler_mod
   !!
   !! x-momentum geometrical source term
   ELEMENTAL FUNCTION GetGeometricalSourceX(cxyx,cxzx,cyxy,czxz,vx,vy,vz,P,my,mz)

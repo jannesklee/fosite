@@ -10,13 +10,15 @@ set (EXES
   #  gresho
   #  implosion
   #  kepdisk
-  #  keplerianvortex
   #  KHI2
   #  linearwave
+  keplerianvortex
   mestel
   mmsn
   orbitingcylinders
+  pringle3d
   restart
+  sgdisk
   shearingsheet
   #  planet2d
   #  planeteu

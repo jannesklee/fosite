@@ -13,10 +13,10 @@ serial_build:
         - mkdir ser_build
         - cd ser_build
         - FC=gfortran cmake -DFFTW_DIR=$FFTW ..
-        - make -j
+        - make
     artifacts:
         paths:
-        - ./*
+        - ./ser_build
         expire_in: 1 week
 
 parallel_build:
@@ -25,10 +25,10 @@ parallel_build:
         - mkdir par_build
         - cd par_build
         - FC=mpifort cmake -DPARALLEL=ON -DFFTW_DIR=$FFTW ..
-        - make -j
+        - make
     artifacts:
         paths:
-        - ./*
+        - ./par_build
         expire_in: 1 week
 
 ser_test_gauss3d:
@@ -96,6 +96,16 @@ par_test_poiseuille:
     script:
         - mpirun -n 2 ./par_build/tests/poiseuille
 
+ser_test_pringle:
+    stage: test
+    script:
+        - ./ser_build/tests/pringle
+
+par_test_pringle:
+    stage: test
+    script:
+        - mpirun -n 2 ./par_build/tests/pringle
+
 ser_test_KHI2D:
     stage: test
     script:
@@ -114,10 +124,25 @@ ser_test_rootstest:
 deploy_github:
     stage: deploy
     script:
-        - git remote set-url origin_github git@github.com:fositeteam/fosite.git
+        - git checkout master
+        - git merge origin/master
+        - git remote add origin_github git@github.com:tillense/fosite.git
         - git push origin_github master --tags
     environment:
       name: deploy_github
+    when: manual
+    only:
+        - tags
+
+deploy_website:
+    stage: deploy
+    script:
+        - git checkout master
+        - git merge origin/master
+        - git remote add origin_website webadmin@portia:/home/webadmin/src/fosite/git
+        - git push origin_website master -f --tags
+    environment:
+      name: deploy_website
     when: manual
     only:
         - tags

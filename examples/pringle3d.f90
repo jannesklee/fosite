@@ -1,7 +1,7 @@
 !#############################################################################
 !#                                                                           #
 !# fosite - 3D hydrodynamical simulation program                             #
-!# module: pringle.f90                                                       #
+!# module: pringle3d.f90                                                     #
 !#                                                                           #
 !# Copyright (C) 2008-2019                                                   #
 !# Bjoern Sperling  <sperling@astrophysik.uni-kiel.de>                       #
@@ -29,6 +29,8 @@
 !! \author Björn Sperling
 !! \author Tobias Illenseer
 !!
+!! This variant simulates the ring with vertical extent with and without
+!! rotational symmetry.
 !! The equations are solved in non-dimensional units, using the Keplerian
 !! velocity at the location of the initial ring at R=1 as the velocity scale.
 !!
@@ -60,10 +62,10 @@ PROGRAM pringle_test
   REAL, PARAMETER    :: MA      = 1.0E+2     ! Mach number (at R=1)
   REAL, PARAMETER    :: MDISK   = 1.0E-2     ! disk mass << 1 = central mass
   ! lower limit for nitial density
-  REAL, PARAMETER    :: RHOMIN  = 1.0E-20    ! minimal initial density
+  REAL, PARAMETER    :: RHOMIN  = 1.0E-8    ! minimal initial density
   ! viscosity prescription
-!   INTEGER, PARAMETER :: VISTYPE = BETA
-  INTEGER, PARAMETER :: VISTYPE = POWERLAW
+  INTEGER, PARAMETER :: VISTYPE = BETA
+!   INTEGER, PARAMETER :: VISTYPE = POWERLAW
   REAL, PARAMETER    :: PL_EXP  = 0.0        ! exponent for power law viscosity
   REAL, PARAMETER    :: TVIS    = 4./3.*RE   ! viscous time scale
   REAL, PARAMETER    :: TINIT   = 1.0E-3     ! time for initial condition [TVIS]
@@ -78,133 +80,33 @@ PROGRAM pringle_test
   !!         to adjust the viscous CFL number cvis to enforce smaller time
   !!         steps and preserve stability.
   !**************************************************************************!
-  INTEGER, PARAMETER :: MGEO = CYLINDRICAL
+!   INTEGER, PARAMETER :: MGEO = CYLINDRICAL
 !   INTEGER, PARAMETER :: MGEO = LOGCYLINDRICAL
-!   INTEGER, PARAMETER :: MGEO = SPHERICAL !!! ATTENTION: not applicable in 1D
-  INTEGER, PARAMETER :: XRES = 400        ! x-resolution
-  INTEGER, PARAMETER :: YRES = 1           ! y-resolution
+  INTEGER, PARAMETER :: MGEO = SPHERICAL !!! ATTENTION: not applicable in 1D
+  INTEGER, PARAMETER :: XRES = 200        ! x-resolution
+  INTEGER, PARAMETER :: YRES = 16           ! y-resolution
   INTEGER, PARAMETER :: ZRES = 1           ! z-resolution
-  REAL, PARAMETER    :: RMIN = 0.05        ! min radius of comp. domain
+  REAL, PARAMETER    :: RMIN = 0.1        ! min radius of comp. domain
   REAL, PARAMETER    :: RMAX = 2.0         ! max radius of comp. domain
   REAL, PARAMETER    :: GPAR = 1.0         ! geometry scaling parameter
   ! output parameters
-  INTEGER, PARAMETER :: ONUM = 10          ! number of output data sets
+  INTEGER, PARAMETER :: ONUM = 100          ! number of output data sets
   CHARACTER(LEN=256), PARAMETER &          ! output data dir
                      :: ODIR = './'
   CHARACTER(LEN=256), PARAMETER &          ! output data file name
-                     :: OFNAME = 'pringle'
+                     :: OFNAME = 'pringle3d'
   ! derived parameters
   REAL, PARAMETER    :: CSISO = 1./MA      ! isothermal speed of sound
-  REAL               :: X0 = 0.0           ! cartesian position of point
-  REAL               :: Y0 = 0.0           !   mass (default: origin)
-  REAL               :: Z0 = 0.0           !
   !--------------------------------------------------------------------------!
   CLASS(fosite), ALLOCATABLE   :: Sim
-  REAL, DIMENSION(:), ALLOCATABLE :: sigma
-  REAL :: sum_numer, sum_denom
-  INTEGER :: n,DEN,VX,VY
-  REAL    :: next_output_time
-  INTEGER :: i,j,k
-  LOGICAL :: ok
   !--------------------------------------------------------------------------!
 
   ALLOCATE(Sim)
   CALL Sim%InitFosite()
-
-#ifdef PARALLEL
-  IF (Sim%GetRank().EQ.0) THEN
-#endif
-TAP_PLAN(4)
-#ifdef PARALLEL
-  END IF
-#endif
-
   CALL MakeConfig(Sim, Sim%config)
   CALL Sim%Setup()
   CALL InitData(Sim,Sim%Mesh, Sim%Physics, Sim%Timedisc)
-  next_output_time = Sim%Datafile%time
-  IF (ASSOCIATED(Sim%Timedisc%solution)) THEN
-#ifdef HAVE_FGSL
-    DO WHILE((Sim%Timedisc%maxiter.LE.0).OR.(Sim%iter.LE.Sim%Timedisc%maxiter))
-      ! advance numerical solution
-      IF(Sim%Step()) EXIT
-      IF (next_output_time.LT.Sim%Datafile%time) THEN
-        ! compute exact solution for next output time step
-        next_output_time = Sim%Datafile%time
-        SELECT TYPE(pvar => Sim%Timedisc%solution)
-        TYPE IS (statevector_eulerisotherm)
-          k=Sim%Mesh%KMIN
-          DO j=Sim%Mesh%JMIN,Sim%Mesh%JMAX
-            DO i=Sim%Mesh%IMIN,Sim%Mesh%IMAX
-              IF (VISTYPE.EQ.BETA) THEN
-                CALL ViscousRing_analytic(1.0,next_output_time/TVIS+TINIT, &
-                  Sim%Mesh%radius%bcenter(i,j,k), &
-                  pvar%density%data3d(i,j,k),pvar%velocity%data4d(i,j,k,1))
-              ELSE
-                CALL ViscousRing_analytic(PL_EXP,next_output_time/TVIS+TINIT, &
-                  Sim%Mesh%radius%bcenter(i,j,k), &
-                  pvar%density%data3d(i,j,k),pvar%velocity%data4d(i,j,k,1))
-              END IF
-            END DO
-          END DO
-        END SELECT
-      END IF
-    END DO
-#else
-    CALL Sim%Error("pringle","computation of analytical solution requires GSL support")
-#endif
-  ELSE
-    CALL Sim%Run()
-  END IF
-  ok = .NOT.Sim%aborted
-  ALLOCATE(sigma(Sim%Physics%VNUM))
-  ! compare with exact solution if requested
-  IF (ASSOCIATED(Sim%Timedisc%solution)) THEN
-    DO n=1,Sim%Physics%VNUM
-      ! use L1 norm to estimate the deviation from the exact solution:
-      !   Σ |pvar - pvar_exact| / Σ |pvar_exact|
-      sum_numer = SUM(ABS(Sim%Timedisc%pvar%data4d(Sim%Mesh%IMIN:Sim%Mesh%IMAX,&
-                           Sim%Mesh%JMIN:Sim%Mesh%JMAX,Sim%Mesh%KMIN:Sim%Mesh%KMAX,n) &
-                        -Sim%Timedisc%solution%data4d(Sim%Mesh%IMIN:Sim%Mesh%IMAX,&
-                           Sim%Mesh%JMIN:Sim%Mesh%JMAX,Sim%Mesh%KMIN:Sim%Mesh%KMAX,n)))
-      sum_denom = SUM(ABS(Sim%Timedisc%solution%data4d(Sim%Mesh%IMIN:Sim%Mesh%IMAX,&
-                           Sim%Mesh%JMIN:Sim%Mesh%JMAX,Sim%Mesh%KMIN:Sim%Mesh%KMAX,n)))
-#ifdef PARALLEL
-      IF (Sim%GetRank().GT.0) THEN
-        CALL MPI_Reduce(sum_numer,sum_numer,1,DEFAULT_MPI_REAL,MPI_SUM,0,MPI_COMM_WORLD,Sim%ierror)
-        CALL MPI_Reduce(sum_denom,sum_denom,1,DEFAULT_MPI_REAL,MPI_SUM,0,MPI_COMM_WORLD,Sim%ierror)
-      ELSE
-        CALL MPI_Reduce(MPI_IN_PLACE,sum_numer,1,DEFAULT_MPI_REAL,MPI_SUM,0,MPI_COMM_WORLD,Sim%ierror)
-        CALL MPI_Reduce(MPI_IN_PLACE,sum_denom,1,DEFAULT_MPI_REAL,MPI_SUM,0,MPI_COMM_WORLD,Sim%ierror)
-#endif
-      sigma(n) = sum_numer / sum_denom
-#ifdef PARALLEL
-      END IF
-#endif
-    END DO
-  ELSE
-    sigma(:) = 0.0
-  END IF
-
-  DEN = Sim%Physics%DENSITY
-  VX  = Sim%Physics%XVELOCITY
-  VY  = Sim%Physics%YVELOCITY
-
-#ifdef PARALLEL
-  IF (Sim%GetRank().EQ.0) THEN
-#endif
-TAP_CHECK(ok,"stoptime reached")
-! These lines are very long if expanded. So we can't indent it or it will be cropped.
-TAP_CHECK_SMALL(sigma(DEN),5.0E-02,"density deviation < 5%")
-TAP_CHECK_SMALL(sigma(VX),8.0E-02,"radial velocity deviation < 8%")
-! skip azimuthal velocity deviation, because exact value is 0
-TAP_CHECK_SMALL(sigma(VY),2.0E-04,"azimuthal velocity deviation < 0.02%")
-TAP_DONE
-#ifdef PARALLEL
-  END IF
-#endif
-
-  IF (ALLOCATED(sigma)) DEALLOCATE(sigma)
+  CALL Sim%Run()
   CALL Sim%Finalize()
   DEALLOCATE(Sim)
 
@@ -232,18 +134,23 @@ CONTAINS
       x2 = RMAX
       y1 = -PI
       y2 = PI
-      z1 = 0.0
-      z2 = 0.0
-!       bc(WEST)  = NO_GRADIENTS
-!       bc(EAST)  = NO_GRADIENTS
+!       z1 = 0.0
+!       z2 = 0.0
+      z1 = -0.1
+      z2 = 0.1
+!       bc(WEST)  = AXIS
+      bc(WEST)  = NO_GRADIENTS
+      bc(EAST)  = NO_GRADIENTS
 !       bc(WEST)  = ABSORBING
 !       bc(EAST)  = ABSORBING
-      bc(WEST)  = CUSTOM
-      bc(EAST)  = CUSTOM
+!       bc(WEST)  = CUSTOM
+!       bc(EAST)  = CUSTOM
       bc(SOUTH) = PERIODIC
       bc(NORTH) = PERIODIC
-      bc(BOTTOM) = NO_GRADIENTS
-      bc(TOP)    = NO_GRADIENTS
+!       bc(BOTTOM) = ABSORBING
+!       bc(TOP)    = ABSORBING
+      bc(BOTTOM) = REFLECTING
+      bc(TOP)    = REFLECTING
       !!! ATTENTION:  empirical formula found for standard parameters
       !!!             seems to work for RMIN=0.05 and XRES <= 1000
       cvis = (XRES/1207.0)**1.9
@@ -264,16 +171,20 @@ CONTAINS
     CASE(SPHERICAL)
       x1 = RMIN
       x2 = RMAX
-      y1 = PI/2 ! - 0.05*PI
-      y2 = PI/2 ! + 0.05*PI
+      y1 = PI/2 - 0.02*PI
+      y2 = PI/2 + 0.02*PI
       z1 = -PI
       z2 = PI
+!       bc(WEST)  = ABSORBING
+      bc(EAST)  = ABSORBING
 !       bc(WEST)  = NO_GRADIENTS
 !       bc(EAST)  = NO_GRADIENTS
       bc(WEST)  = CUSTOM
-      bc(EAST)  = CUSTOM
-      bc(SOUTH) = NO_GRADIENTS
-      bc(NORTH) = NO_GRADIENTS
+!       bc(EAST)  = CUSTOM
+!       bc(SOUTH) = NO_GRADIENTS
+!       bc(NORTH) = NO_GRADIENTS
+      bc(SOUTH) = ABSORBING
+      bc(NORTH) = ABSORBING
       bc(BOTTOM) = PERIODIC
       bc(TOP)    = PERIODIC
       !!! ATTENTION:  empirical formula found for standard parameters
@@ -337,14 +248,12 @@ CONTAINS
             "stype"     / GRAVITY, &
             "pmass/gtype"/ POINTMASS, &    ! grav. accel. of a point mass
             "pmass/mass" / 1.0, &          ! non-dim. mass of the accreting object
-            "pmass/x"   / X0, &            ! cartesian position of point mass
-            "pmass/y"   / Y0, &
             "pmass/outbound" / 0)          ! disable accretion
 
     ! combine all source terms
     sources => Dict( &
-            "grav"      / grav, &
-            "viscosity" / vis)
+            "viscosity" / vis, &
+            "grav"      / grav)
 
     ! time discretization settings
     timedisc => Dict( &
@@ -355,13 +264,13 @@ CONTAINS
 !             "rhstype"   / 1, &
             "maxiter"   / 100000000, &
             "tol_rel"   / 0.01, &
-            "tol_abs"   / (/0.0,1e-5,0.0/))
+            "tol_abs"   / (/1e-40,1e-5,1e-8,1e-5/))
 
-    ! enable output of analytical solution
-#ifdef HAVE_FGSL
-    IF (MGEO.EQ.CYLINDRICAL) &
-      CALL SetAttr(timedisc,"output/solution",1)
-#endif
+!     ! enable output of analytical solution
+! #ifdef HAVE_FGSL
+!     IF (MGEO.EQ.CYLINDRICAL) &
+!       CALL SetAttr(timedisc,"output/solution",1)
+! #endif
 
     ! initialize data input/output
     datafile => Dict( &
@@ -380,6 +289,7 @@ CONTAINS
   END SUBROUTINE MakeConfig
 
   SUBROUTINE InitData(Sim,Mesh,Physics,Timedisc)
+    USE geometry_generic_mod
     IMPLICIT NONE
     !------------------------------------------------------------------------!
     CLASS(fosite),   INTENT(INOUT) :: Sim
@@ -390,51 +300,34 @@ CONTAINS
     ! Local variable declaration
     CLASS(sources_base), POINTER :: sp
     CLASS(sources_gravity), POINTER :: gp
+    CLASS(geometry_base), ALLOCATABLE :: geo_cyl
+    TYPE(Dict_TYP), POINTER :: geo_config
     INTEGER           :: i,j,k
+#ifdef PARALLEL
+    INTEGER           :: ierror
+#endif
     REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,3) &
-                      :: posvec,ephi
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX) :: radius
-    REAL              :: r,vr,vphi,sden,mu
+                      :: bccyl
+    REAL              :: r,z,vr,vphi,sden,mu,height,mass
     CHARACTER(LEN=64) :: value
     !------------------------------------------------------------------------!
-    IF (ABS(X0).LE.TINY(X0).AND.ABS(Y0).LE.TINY(Y0)) THEN
-       ! no shift of point mass set radius and posvec to Mesh defaults
-       radius(:,:,:) = Mesh%radius%bcenter(:,:,:)
-       posvec(:,:,:,:) = Mesh%posvec%bcenter(:,:,:,:)
-    ELSE
-       ! shifted point mass position:
-       ! compute curvilinear components of shift vector
-       posvec(:,:,:,1) = X0
-       posvec(:,:,:,2) = Y0
-       posvec(:,:,:,3) = Z0
-       CALL Mesh%Geometry%Convert2Curvilinear(Mesh%bcenter,posvec,posvec)
-       ! subtract the result from the position vector:
-       ! this gives you the curvilinear components of all vectors pointing
-       ! from the point mass to the bary center of any cell on the mesh
-       posvec(:,:,:,:) = Mesh%posvec%bcenter(:,:,:,:) - posvec(:,:,:,:)
-       ! compute its absolute value
-       radius(:,:,:) = SQRT(posvec(:,:,:,1)**2+posvec(:,:,:,2)**2+posvec(:,:,:,3)**2)
-    END IF
+    geo_config => Dict("geometry" / CYLINDRICAL)
+    CALL new_geometry(geo_cyl,geo_config)
+    CALL DeleteDict(geo_config)
 
-    ! curvilinear components of azimuthal unit vector
-    ! (maybe with respect to shifted origin)
-    ! from ephi = ez x er = ez x posvec/radius = ez x (rxi*exi + reta*eeta)/r
-    !             = rxi/r*(ez x exi) + reta/r*(ez x eeta) = rxi/r*eeta - reta/r*exi
-    ! because (ez,exi,eeta) is right handed orthonormal set of basis vectors
-    ephi(:,:,:,1) = -posvec(:,:,:,2)/radius(:,:,:)
-    ephi(:,:,:,2) = posvec(:,:,:,1)/radius(:,:,:)
-    ephi(:,:,:,3) = 0.0
+    ! compute cylindrical coordinates for each cell bary center
+    CALL geo_cyl%Convert2Curvilinear(Mesh%bccart,bccyl)
 
     ! custom boundary conditions if requested
     SELECT TYPE(bwest => Timedisc%Boundary%boundary(WEST)%p)
     CLASS IS (boundary_custom)
       CALL bwest%SetCustomBoundaries(Mesh,Physics, &
-        (/CUSTOM_NOGRAD,CUSTOM_EXTRAPOL,CUSTOM_KEPLER/))
+        (/CUSTOM_NOGRAD,CUSTOM_OUTFLOW,CUSTOM_KEPLER,CUSTOM_NOGRAD/))
     END SELECT
     SELECT TYPE(beast => Timedisc%Boundary%boundary(EAST)%p)
     CLASS IS (boundary_custom)
       CALL beast%SetCustomBoundaries(Mesh,Physics, &
-        (/CUSTOM_LOGEXPOL,CUSTOM_OUTFLOW,CUSTOM_KEPLER/))
+        (/CUSTOM_NOGRAD,CUSTOM_OUTFLOW,CUSTOM_KEPLER,CUSTOM_NOGRAD/))
     END SELECT
 
     ! get gravitational acceleration
@@ -465,10 +358,14 @@ CONTAINS
       DO k=Mesh%KGMIN,Mesh%KGMAX
         DO j=Mesh%JGMIN,Mesh%JGMAX
           DO i=Mesh%IMIN,Mesh%IGMAX
-            ! distance to center of mass
-            r = radius(i,j,k)
+            ! distance to axis (r-coordinate in cylindrical coordinates)
+            r = bccyl(i,j,k,1)
+            ! z-coordinate
+            z = bccyl(i,j,k,3)
             ! Keplerian velocity
-            vphi = SQRT(1.0/r)
+            vphi = r/(r**2+z**2)**0.75 
+            ! compute pressure scale height
+            height = CSISO * SQRT(r**3) ! h = cs / Omega = cs / SQRT(GM/r**3), with GM=1
 #ifdef HAVE_FGSL
             ! use exact solution at time TINIT
             CALL ViscousRing_analytic(mu,TINIT,r,sden,vr)
@@ -477,19 +374,27 @@ CONTAINS
             ! no need for modified Bessel functions
             CALL ViscousRing_approx(mu,TINIT,r,sden,vr)
 #endif
-            pvar%density%data3d(i,j,k) = RHOMIN + sden
-            ! curvilinear velocity components
-            pvar%velocity%data4d(i,j,k,1:2) = &
-                vr*posvec(i,j,k,1:2)/r + vphi*ephi(i,j,k,1:2)
-!               pvar%velocity%data4d(i,j,k,1:2) = vr*posvec(i,j,k,1:2)/r
-!               p%velocity%data4d(i,j,k,2) = vphi
+            pvar%density%data3d(i,j,k) = RHOMIN + sden / (SQRT(2*PI) * height) &
+              * EXP(-0.5*(z/height)**2)
+!             pvar%velocity%data4d(i,j,k,1) = vr
+!             pvar%velocity%data4d(i,j,k,2) = vphi
+!             pvar%velocity%data4d(i,j,k,3) = 0.0
           END DO
         END DO
       END DO
-!         CALL gp%UpdateGravity(Mesh,Sim%Physics,Sim%Fluxes,pvar,0.0,0.0)
-!         pvar%velocity%data4d(:,:,:,1:Physics%VDIM) = &
-!           Timedisc%GetCentrifugalVelocity(Mesh,Sim%Physics,Sim%Fluxes,Sim%Sources,(/0.,0.,1./), &
-!             gp%accel%data4d)
+      ! determine disk mass
+      mass = SUM(Mesh%volume%data1d(:)*pvar%density%data1d(:),MASK=Mesh%without_ghost_zones%mask1d)
+#ifdef PARALLEL
+      CALL MPI_AllReduce(MPI_IN_PLACE,mass,1,DEFAULT_MPI_REAL,MPI_SUM, &
+                         Mesh%comm_cart,ierror)
+#endif
+      ! rescale disk mass
+      pvar%density%data1d(:) = pvar%density%data1d(:) * MDISK / mass
+      pvar%velocity%data1d(:) = 0.0 ! initialize all velocities with zero
+      CALL gp%UpdateGravity(Mesh,Sim%Physics,Sim%Fluxes,pvar,0.0,0.0)
+      pvar%velocity%data4d(:,:,:,1:Physics%VDIM) = &
+        Timedisc%GetCentrifugalVelocity(Mesh,Sim%Physics,Sim%Fluxes,Sim%Sources,(/0.,0.,1./), &
+          gp%accel%data4d)
     CLASS DEFAULT
       CALL Timedisc%Error("pringle::InitData","only isothermal physics possible")
     END SELECT
@@ -498,10 +403,6 @@ CONTAINS
       ! store initial condition in exact solution array
       Timedisc%solution = Timedisc%pvar
     END IF
-
-    ! check fargo and set background velocity field
-    IF (Mesh%FARGO.EQ.2) &
-       Timedisc%w(:,:) = SQRT(1.0/radius(:,Mesh%JMIN,:))
 
     ! transform to conservative variables
     CALL Physics%Convert2Conservative(Timedisc%pvar,Timedisc%cvar)
@@ -513,7 +414,11 @@ CONTAINS
     CALL Mesh%Info("                               " // "Reynolds number:    " //TRIM(value))
     WRITE(value,"(ES9.3)") MA
     CALL Mesh%Info("                               " // "Mach number:        " //TRIM(value))
+    WRITE(value,"(ES9.3)") MDISK
+    CALL Mesh%Info("                               " // "Disk mass:          " //TRIM(value))
 
+    CALL geo_cyl%Finalize()
+    DEALLOCATE(geo_cyl)
   END SUBROUTINE InitData
 
 

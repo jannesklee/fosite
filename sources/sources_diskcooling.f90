@@ -3,7 +3,7 @@
 !# fosite - 3D hydrodynamical simulation program                             #
 !# module: sources_diskcooling.f90                                           #
 !#                                                                           #
-!# Copyright (C) 2011-2018                                                   #
+!# Copyright (C) 2011-2019                                                   #
 !# Tobias Illenseer <tillense@astrophysik.uni-kiel.de>                       #
 !# Jannes Klee      <jklee@astrophysik.uni-kiel.de>                          #
 !#                                                                           #
@@ -311,7 +311,7 @@ CONTAINS
 
 
   SUBROUTINE ExternalSources_single(this,Mesh,Physics,Fluxes,Sources,time,dt,pvar,cvar,sterm)
-    USE physics_euler_mod, ONLY : physics_euler
+    USE physics_euler_mod, ONLY : physics_euler, statevector_euler
     IMPLICIT NONE
     !------------------------------------------------------------------------!
     CLASS(sources_diskcooling), INTENT(INOUT) :: this
@@ -322,53 +322,60 @@ CONTAINS
     REAL,INTENT(IN)                     :: time, dt
     CLASS(marray_compound),INTENT(INOUT):: pvar,cvar,sterm
     !------------------------------------------------------------------------!
-    sterm%data2d(:,Physics%DENSITY) = 0.0
-    sterm%data2d(:,Physics%XMOMENTUM) = 0.0
-    sterm%data2d(:,Physics%YMOMENTUM) = 0.0
+    SELECT TYPE(s => sterm)
+    TYPE IS (statevector_euler)
+      s%density%data1d(:) = 0.0
+      s%momentum%data1d(:) = 0.0
 
-    SELECT TYPE(phys => Physics)
-    TYPE IS (physics_euler)
-       CALL this%UpdateCooling(Mesh,phys,Sources,time,pvar)
+      SELECT TYPE(phys => Physics)
+      TYPE IS (physics_euler)
+        SELECT TYPE(p => pvar)
+        TYPE IS (statevector_euler)
+          CALL this%UpdateCooling(Mesh,phys,Sources,time,p)
+        END SELECT
+      END SELECT
+
+      ! energy loss due to radiation processes
+      s%energy%data1d(:) = -this%Qcool%data1d(:)
+
     END SELECT
-    ! energy loss due to radiation processes
-    sterm%data2d(:,Physics%ENERGY) = -this%Qcool%data1d(:)
   END SUBROUTINE ExternalSources_single
 
 
-  SUBROUTINE CalcTimestep_single(this,Mesh,Physics,Fluxes,time,pvar,cvar,dt)
+  SUBROUTINE CalcTimestep_single(this,Mesh,Physics,Fluxes,pvar,cvar,time,dt)
+    USE physics_euler_mod, ONLY : physics_euler, statevector_euler
     IMPLICIT NONE
     !------------------------------------------------------------------------!
     CLASS(sources_diskcooling), INTENT(INOUT) :: this
     CLASS(mesh_base),    INTENT(IN)    :: Mesh
     CLASS(physics_base), INTENT(INOUT) :: Physics
     CLASS(fluxes_base),  INTENT(IN)    :: Fluxes
-    REAL,                INTENT(IN)    :: time
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Physics%VNUM), &
-                         INTENT(IN)    :: pvar,cvar
-    REAL,                INTENT(OUT)   :: dt
+    CLASS(marray_compound), INTENT(INOUT) :: pvar,cvar
+    REAL,                INTENT(IN)       :: time
+    REAL,                INTENT(OUT)      :: dt
     !------------------------------------------------------------------------!
     REAL              :: invdt
     !------------------------------------------------------------------------!
     ! maximum of inverse cooling timescale t_cool ~ P/Q_cool
-    invdt = MAXVAL(ABS(this%Qcool%data3d(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX) &
-         / pvar(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,Physics%PRESSURE)))
-    IF (invdt.GT.TINY(invdt)) THEN
-       dt = this%cvis / invdt
-    ELSE
-       dt = HUGE(invdt)
-    END IF
+    dt = HUGE(invdt)
+    SELECT TYPE(p => pvar)
+    CLASS IS(statevector_euler)
+      invdt = MAXVAL(ABS(this%Qcool%data1d(:) / p%pressure%data1d(:)), &
+                     MASK=Mesh%without_ghost_zones%mask1d(:))
+      IF (invdt.GT.TINY(invdt)) dt = this%cvis / invdt
+    END SELECT
   END SUBROUTINE CalcTimestep_single
 
   !> \private Updates the cooling function at each time step.
   SUBROUTINE UpdateCooling(this,Mesh,Physics,Sources,time,pvar)
-    USE physics_euler_mod, ONLY : physics_euler
+    USE physics_euler_mod, ONLY : physics_euler, statevector_euler
     IMPLICIT NONE
     !------------------------------------------------------------------------!
     CLASS(sources_diskcooling)         :: this
     CLASS(mesh_base),    INTENT(IN)    :: Mesh
     CLASS(physics_euler),INTENT(INOUT) :: Physics
     CLASS(sources_base), INTENT(INOUT) :: Sources
-    CLASS(marray_compound),INTENT(INOUT):: pvar
+    CLASS(statevector_euler),INTENT(INOUT):: pvar
     REAL,                INTENT(IN)    :: time
     !------------------------------------------------------------------------!
     REAL              :: muRgamma,Qfactor
@@ -406,7 +413,7 @@ CONTAINS
                     +Mesh%OMEGA*Mesh%radius%bcenter(:,:,:)))) / this%b_cool)
        CASE(GAMMIE_SB)
           ! in sb t_cool = b_cool
-          this%Qcool%data1d(:) = Lambda_gammie(pvar%data2d(:,Physics%PRESSURE) / (Physics%gamma-1.), &
+          this%Qcool%data1d(:) = Lambda_gammie(pvar%pressure%data1d(:) / (Physics%gamma-1.), &
               Mesh%OMEGA/this%b_cool)
     END SELECT
 

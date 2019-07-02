@@ -130,7 +130,6 @@ PRIVATE
      REAL, DIMENSION(:,:), POINTER     :: buf=>null()     !< fargo MPI buffer
      REAL, DIMENSION(:,:), POINTER     :: w=>null()       !< fargo background velocity
      REAL, DIMENSION(:,:), POINTER     :: delxy =>null()  !< fargo residual shift
-     REAL, DIMENSION(:,:,:,:), POINTER :: fargo_src =>null() !< fargo source terms
 
   CONTAINS
 
@@ -238,7 +237,7 @@ CONTAINS
     IF (.NOT.Physics%Initialized().OR..NOT.Mesh%Initialized()) &
          CALL this%Error("InitTimedisc","physics and/or mesh module uninitialized")
 
-      ! allocate memory for data structures needed in all timedisc modules
+    ! allocate memory for data structures needed in all timedisc modules
     ALLOCATE( &
       this%xfluxdydz(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Physics%VNUM), &
       this%yfluxdzdx(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Physics%VNUM), &
@@ -279,12 +278,12 @@ CONTAINS
     this%tol_abs   = 0.
     this%dtmean    = 0.
     this%dtstddev  = 0.
-    this%time      = 0.
     this%break     = .FALSE.
     this%n_adj     = 0
     this%maxerrold = 0.
     this%dtaccept  = 0
 
+    CALL GetAttr(config, "starttime", this%time, 0.0)
     CALL GetAttr(config, "method", method)
     CALL GetAttr(config, "stoptime", this%stoptime)
     this%dt    = this%stoptime
@@ -338,7 +337,7 @@ CONTAINS
 
     ! check data bit mask
     ! \todo{expected argument list...}
-    CALL GetAttr(config, "checkdata", this%checkdatabm, CHECK_INVALID)
+    CALL GetAttr(config, "checkdata", this%checkdatabm, CHECK_ALL)
 
     ! pressure minimum to check if CHECK_PMIN is active
     CALL GetAttr(config, "pmin", this%pmin, TINY(this%pmin))
@@ -361,12 +360,13 @@ CONTAINS
          ! check geometry
          SELECT TYPE(geo=>Mesh%Geometry)
          TYPE IS(geometry_cylindrical)
+            IF (Mesh%JNUM.LT.2) CALL this%Error("InitTimedisc", &
+              "fargo advection needs more the one cell in y-direction")
             ! allocate data arrays used for fargo
             ALLOCATE( &
                      this%w(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX), &
                      this%delxy(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX), &
                      this%shift(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX), &
-                     this%fargo_src(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Physics%VNUM+Physics%PNUM), &
 #ifdef PARALLEL
                      this%buf(Physics%VNUM+Physics%PNUM,1:Mesh%MINJNUM), & !!! NOT CHANGED, because not clear were used !
 #endif
@@ -374,15 +374,15 @@ CONTAINS
             IF (err.NE.0) THEN
                CALL this%Error("InitTimedisc", "Unable to allocate memory for fargo advection.")
             END IF
-            this%fargo_src(:,:,:,:) = 0.0
 
          TYPE IS(geometry_logcylindrical)
+            IF (Mesh%JNUM.LT.2) CALL this%Error("InitTimedisc", &
+              "fargo advection needs more the one cell in y-direction")
             ! allocate data arrays used for fargo
             ALLOCATE( &
                      this%w(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX), &
                      this%delxy(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX), &
                      this%shift(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX), &
-                     this%fargo_src(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Physics%VNUM+Physics%PNUM), &
 #ifdef PARALLEL
                      this%buf(Physics%VNUM+Physics%PNUM,1:Mesh%MINJNUM), & !!! NOT CHANGED, because not clear were used !
 #endif
@@ -390,7 +390,6 @@ CONTAINS
             IF (err.NE.0) THEN
                CALL this%Error("InitTimedisc", "Unable to allocate memory for fargo advection.")
             END IF
-            this%fargo_src(:,:,:,:) = 0.0
          TYPE IS(geometry_cartesian) ! in cartesian fargo shift can be chosen in either x- or y-direction
             IF(Mesh%shear_dir.EQ.2) THEN
                ALLOCATE( &
@@ -479,7 +478,7 @@ CONTAINS
     CALL this%Info("            stoptime:          " //TRIM(stoptime_str))
     CALL this%Info("            beta:              " //TRIM(beta_str))
     ! adaptive step size control
-    IF (this%tol_rel.LT.1.0) THEN
+    IF (this%tol_rel.LT.1.0.AND.this%order.GT.1) THEN
       ! create state vector to store the error
       CALL Physics%new_statevector(this%cerr,CONSERVATIVE)
       this%cerr%data1d(:)    = 0.
@@ -607,11 +606,11 @@ CONTAINS
       ! ATTENTION: this are the numerical fluxes devided by dy or dx respectively
       CALL GetAttr(config, "output/" // "fluxes", valwrite, 0)
       IF (valwrite.EQ.1) THEN
-           CALL SetAttr(IO, TRIM(key)//"_xfluxdy", &
+           CALL SetAttr(IO, TRIM(key)//"_xfluxdydz", &
                         this%xfluxdydz(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,i))
-           CALL SetAttr(IO, TRIM(key)//"_yfluxdx", &
+           CALL SetAttr(IO, TRIM(key)//"_yfluxdzdx", &
                         this%yfluxdzdx(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,i))
-           CALL SetAttr(IO, TRIM(key)//"_zfluxdx", &
+           CALL SetAttr(IO, TRIM(key)//"_zfluxdxdy", &
                         this%zfluxdxdy(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,i))
       END IF
 
@@ -644,9 +643,9 @@ CONTAINS
     ! transform to selenoidal velocities if fargo is enabled
     IF (Mesh%FARGO.GT.0) THEN
        IF (Mesh%shear_dir.EQ.1.AND.Mesh%FARGO.EQ.3) THEN
-          CALL Physics%SubtractBackgroundVelocityX(Mesh,this%w,this%pvar%data4d,this%cvar%data4d)
+          CALL Physics%SubtractBackgroundVelocityX(Mesh,this%w,this%pvar,this%cvar)
        ELSE
-          CALL Physics%SubtractBackgroundVelocityY(Mesh,this%w,this%pvar%data4d,this%cvar%data4d)
+          CALL Physics%SubtractBackgroundVelocityY(Mesh,this%w,this%pvar,this%cvar)
        END IF
     END IF
 
@@ -848,7 +847,7 @@ CONTAINS
     IF (ASSOCIATED(Sources)) THEN
       ! initialize this to be sure dt_src > 0
       dt_src = dt_cfl
-      CALL Sources%CalcTimestep(Mesh,Physics,Fluxes,time,this%pvar%data4d,this%cvar%data4d,dt_src,dtcause)
+      CALL Sources%CalcTimestep(Mesh,Physics,Fluxes,this%pvar,this%cvar,time,dt_src,dtcause)
       dt = MIN(dt_cfl,dt_src)
     ELSE
       dt = dt_cfl
@@ -1005,6 +1004,7 @@ CONTAINS
     INTEGER,              INTENT(IN)    :: checkdatabm
     !------------------------------------------------------------------------!
     INTEGER                             :: i,j,k,l
+    LOGICAL                             :: have_potential
     REAL                                :: t
     REAL                                :: phi,wp
     REAL, DIMENSION(:,:,:,:), POINTER   :: pot
@@ -1016,16 +1016,16 @@ CONTAINS
     CASE(1,2)
         ! transform to real velocity, i.e. v_residual + w_background,
         ! before setting the boundary conditions
-        CALL Physics%AddBackgroundVelocityY(Mesh,this%w,pvar%data4d,cvar%data4d)
+        CALL Physics%AddBackgroundVelocityY(Mesh,this%w,pvar,cvar)
     CASE(3)
         ! boundary conditions are set for residual velocity in shearing box simulations
         ! usually it's not necessary to subtract the background velocity here, but
         ! in case someone adds it before, we subtract it here; the  subroutine checks,
         ! if the velocities have already been transformed
         IF (Mesh%shear_dir.EQ.1) THEN
-          CALL Physics%SubtractBackgroundVelocityX(Mesh,this%w,pvar%data4d,cvar%data4d)
+          CALL Physics%SubtractBackgroundVelocityX(Mesh,this%w,pvar,cvar)
         ELSE IF (Mesh%shear_dir.EQ.2) THEN
-          CALL Physics%SubtractBackgroundVelocityY(Mesh,this%w,pvar%data4d,cvar%data4d)
+          CALL Physics%SubtractBackgroundVelocityY(Mesh,this%w,pvar,cvar)
         END IF
         ! ATTENTION: the time must be the initial time of the whole time step
         !            not the time of a substep
@@ -1035,7 +1035,7 @@ CONTAINS
     END SELECT
 
     ! set boundary values and convert conservative to primitive variables
-    CALL this%boundary%CenterBoundary(Mesh,Physics,t,pvar%data4d,cvar%data4d)
+    CALL this%boundary%CenterBoundary(Mesh,Physics,t,pvar,cvar)
 
     IF(IAND(checkdatabm,CHECK_TMIN).NE.CHECK_NOTHING.AND.&
       this%tmin.GT.1.E-10) THEN
@@ -1046,6 +1046,22 @@ CONTAINS
           ! If temperature is below TMIN limit pressure to density*RG/MU*TMIN.
           p%pressure%data1d(:) = MAX(p%pressure%data1d(:), &
             p%density%data1d(:)*Physics%Constants%RG/Physics%MU*this%TMIN)
+          CALL Physics%Convert2Conservative(p,c)
+        END SELECT
+      END SELECT
+    END IF
+
+    IF(IAND(checkdatabm,CHECK_PMIN).NE.CHECK_NOTHING.AND.&
+       Physics%PRESSURE.GT.0) THEN
+      ! Check if the pressure is below pmin. If it is, increase the pressure
+      ! to reach pmin
+      SELECT TYPE(p => pvar)
+      CLASS IS(statevector_euler)
+        SELECT TYPE(c => cvar)
+        CLASS IS(statevector_euler)
+          ! If temperature is below PMIN limit pressure to PMIN
+          p%pressure%data1d(:) &
+            = MAX(p%pressure%data1d(:),this%pmin)
           CALL Physics%Convert2Conservative(p,c)
         END SELECT
       END SELECT
@@ -1079,12 +1095,10 @@ CONTAINS
     ! carried out with residual velocity
     SELECT CASE(Mesh%FARGO)
     CASE(1,2)
-        ! compute fargo source terms
-        CALL Physics%FargoSources(Mesh,this%w,pvar%data4d,cvar%data4d,this%fargo_src)
-        ! add them to the geometrical source terms
-        this%geo_src%data4d(:,:,:,:) = this%geo_src%data4d(:,:,:,:) + this%fargo_src(:,:,:,:)
+        ! add fargo source terms to geometrical source terms
+        CALL Physics%AddFargoSources(Mesh,this%w,pvar,cvar,this%geo_src)
         ! subtract background velocity
-        CALL Physics%SubtractBackgroundVelocityY(Mesh,this%w,pvar%data4d,cvar%data4d)
+        CALL Physics%SubtractBackgroundVelocityY(Mesh,this%w,pvar,cvar)
     CASE(3)
         ! background velocity field has already been subtracted (do nothing);
         ! fargo specific source terms are handled in the shearing box source
@@ -1152,8 +1166,6 @@ CONTAINS
       !> \todo Very hacky implementation of pluto style angular momentum
       !! conservation. A better implementation is needed, but we would need to
       !! restucture the timedisc module
-      !! also: use this with EULER2DISOTHM. EULER2D version is untested, may need
-      !! small fixes.
       sp => Sources
       DO
         IF (ASSOCIATED(sp).EQV..FALSE.) RETURN
@@ -1166,44 +1178,49 @@ CONTAINS
       END DO
 
       NULLIFY(pot)
+      have_potential = .FALSE.
       IF(ASSOCIATED(grav)) THEN
         IF(.NOT.grav%addtoenergy) THEN
           pot => Mesh%RemapBounds(grav%pot%data4d(:,:,:,:))
+          have_potential=.TRUE.
         END IF
       END IF
 
       phi = 0.
 
       DO k=Mesh%KMIN-Mesh%KP1,Mesh%KMAX
-        DO j=Mesh%JMIN-1,Mesh%JMAX
-          DO i=Mesh%IMIN-1,Mesh%IMAX
+        DO j=Mesh%JMIN-Mesh%JP1,Mesh%JMAX
+!NEC$ IVDEP
+          DO i=Mesh%IMIN-Mesh%IP1,Mesh%IMAX
             wp = 0.5*(this%w(i,k)+this%w(i+1,k)) + Mesh%hy%faces(i+1,j,k,1)*Mesh%OMEGA
-            IF(ASSOCIATED(pot)) &
-              phi = pot(i,j,k,2)
-            IF(Physics%PRESSURE.GT.0) &
+            IF(Physics%PRESSURE.GT.0) THEN
               this%xfluxdydz(i,j,k,Physics%ENERGY) &
                 = this%xfluxdydz(i,j,k,Physics%ENERGY) &
                   + wp * (0.5 * wp * this%xfluxdydz(i,j,k,Physics%DENSITY) &
-                  + this%xfluxdydz(i,j,k,Physics%YMOMENTUM)) &
-                  + phi*this%xfluxdydz(i,j,k,Physics%DENSITY)
+                  + this%xfluxdydz(i,j,k,Physics%YMOMENTUM))
+              IF (have_potential) THEN
+                this%xfluxdydz(i,j,k,Physics%ENERGY) = this%xfluxdydz(i,j,k,Physics%ENERGY) + pot(i,j,k,2)*this%xfluxdydz(i,j,k,Physics%DENSITY)
+              END IF
+            END IF
 
             this%xfluxdydz(i,j,k,Physics%YMOMENTUM) &
               = (this%xfluxdydz(i,j,k,Physics%YMOMENTUM) &
                 + wp * this%xfluxdydz(i,j,k,Physics%DENSITY)) * Mesh%hy%faces(i+1,j,k,1)
 
             wp = this%w(i,k) + Mesh%radius%bcenter(i,j,k)*Mesh%OMEGA
-            IF(ASSOCIATED(pot)) &
-              phi = pot(i,j,k,3)
-            IF(Physics%PRESSURE.GT.0) &
+            IF(Physics%PRESSURE.GT.0) THEN
               this%yfluxdzdx(i,j,k,Physics%ENERGY) &
                 = this%yfluxdzdx(i,j,k,Physics%ENERGY) &
                  + wp * ( 0.5 * wp * this%yfluxdzdx(i,j,k,Physics%DENSITY) &
-                 + this%yfluxdzdx(i,j,k,Physics%YMOMENTUM)) &
-                 + phi*this%yfluxdzdx(i,j,k,Physics%DENSITY)
+                 + this%yfluxdzdx(i,j,k,Physics%YMOMENTUM))
+              IF (have_potential) THEN
+                this%yfluxdzdx(i,j,k,Physics%ENERGY) = this%yfluxdzdx(i,j,k,Physics%ENERGY) + pot(i,j,k,3)*this%yfluxdzdx(i,j,k,Physics%DENSITY)
+              END IF
+            END IF
 
             this%yfluxdzdx(i,j,k,Physics%YMOMENTUM) &
               = this%yfluxdzdx(i,j,k,Physics%YMOMENTUM) &
-                + wp * this%yfluxdzdx(i,j,k,Physics%DENSITY) !* Mesh%hy%bcenter(i,j)
+                + wp * this%yfluxdzdx(i,j,k,Physics%DENSITY)
           END DO
         END DO
       END DO
@@ -1213,6 +1230,7 @@ CONTAINS
       CLASS IS (physics_eulerisotherm)
         DO k=Mesh%KMIN,Mesh%KMAX
           DO j=Mesh%JMIN,Mesh%JMAX
+!NEC$ IVDEP
             DO i=Mesh%IMIN,Mesh%IMAX
               wp = pvar%data4d(i,j,k,Physics%YVELOCITY) + this%w(i,k) + Mesh%radius%bcenter(i,j,k)*Mesh%OMEGA
               this%geo_src%data4d(i,j,k,Physics%XMOMENTUM) &
@@ -1232,12 +1250,6 @@ CONTAINS
                   = this%geo_src%data4d(i,j,k,Physics%YMOMENTUM) &
                     + pvar%data4d(i,j,k,Physics%PRESSURE) &
                       *( Mesh%cxyx%center(i,j,k) + Mesh%czyz%center(i,j,k) )
-!                this%geo_src%data4d(i,j,Physics%XMOMENTUM) &
-!                  = this%geo_src%data4d(i,j,Physics%XMOMENTUM) &
-!                    - 0.5*(pvar%data4d(i+1,j,Physics%PRESSURE) - pvar%data4d(i-1,j,Physics%PRESSURE))/Mesh%dlx(i,j)
-!                this%geo_src%data4d(i,j,Physics%YMOMENTUM) &
-!                  = this%geo_src%data4d(i,j,Physics%YMOMENTUM) &
-!                    - 0.5*(pvar%data4d(i,j+1,Physics%PRESSURE) - pvar%data4d(i,j-1,Physics%PRESSURE))/Mesh%dly(i,j)
                 this%geo_src%data4d(i,j,k,Physics%ENERGY) = 0.
               ELSE
 
@@ -1282,17 +1294,20 @@ CONTAINS
 
       DO k=Mesh%KMIN,Mesh%KMAX
         DO j=Mesh%JMIN,Mesh%JMAX
+!NEC$ IVDEP
           DO i=Mesh%IMIN,Mesh%IMAX
-            IF(ASSOCIATED(pot)) &
-              phi = pot(i,j,k,1)
             wp = this%w(i,k) + Mesh%radius%bcenter(i,j,k) * Mesh%OMEGA
             rhs%data4d(i,j,k,Physics%YMOMENTUM) = rhs%data4d(i,j,k,Physics%YMOMENTUM) &
               - wp * rhs%data4d(i,j,k,Physics%DENSITY)
-            IF(Physics%PRESSURE.GT.0) &
+            IF(Physics%PRESSURE.GT.0) THEN
               rhs%data4d(i,j,k,Physics%ENERGY) = rhs%data4d(i,j,k,Physics%ENERGY) &
                 - wp*( rhs%data4d(i,j,k,Physics%YMOMENTUM) &
-                       + 0.5 * wp* rhs%data4d(i,j,k,Physics%DENSITY)) &
-                - phi * rhs%data4d(i,j,k,Physics%DENSITY)
+                       + 0.5 * wp* rhs%data4d(i,j,k,Physics%DENSITY))
+              IF (have_potential) THEN
+                rhs%data4d(i,j,k,Physics%ENERGY) = &
+                rhs%data4d(i,j,k,Physics%ENERGY) - pot(i,j,k,1) * rhs%data4d(i,j,k,Physics%DENSITY)
+              END IF
+            END IF
           END DO
         END DO
       END DO
@@ -1618,7 +1633,7 @@ CONTAINS
 #ifdef PARALLEL
     ! make sure all MPI processes use the same step if domain is decomposed
     ! along the y-direction (can be different due to round-off errors)
-    IF (Mesh%dims(1).GT.1) THEN
+    IF (Mesh%dims(2).GT.1) THEN
       CALL MPI_Allreduce(MPI_IN_PLACE,this%delxy,(Mesh%IGMAX-Mesh%IGMIN+1)*(Mesh%KGMAX-Mesh%KGMIN+1), &
                          DEFAULT_MPI_REAL,MPI_MIN,Mesh%Jcomm,ierror)
     END IF
@@ -1748,8 +1763,7 @@ CONTAINS
     CLASS(timedisc_base), INTENT(INOUT) :: this
     CLASS(mesh_base),     INTENT(IN)    :: Mesh
     CLASS(physics_base),  INTENT(INOUT) :: Physics
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Physics%VNUM+Physics%PNUM), &
-                          INTENT(INOUT) :: pvar,cvar
+    CLASS(marray_compound), INTENT(INOUT) :: pvar,cvar
     REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX), &
                           INTENT(OUT)   :: w
     !------------------------------------------------------------------------!
@@ -1761,27 +1775,56 @@ CONTAINS
     !------------------------------------------------------------------------!
     ! make sure we are using true, i.e. non-selenoidal, quantities
     CALL Physics%AddBackgroundVelocityY(Mesh,w,pvar,cvar)
-    DO k=Mesh%KGMIN,Mesh%KGMAX
-      DO i=Mesh%IGMIN,Mesh%IGMAX
-        ! some up all yvelocities along the y-direction
-        wi = SUM(this%pvar%data4d(i,Mesh%JMIN:Mesh%JMAX,k,Physics%YVELOCITY))
+    SELECT TYPE(p => pvar)
+    CLASS IS(statevector_eulerisotherm)
+      DO k=Mesh%KGMIN,Mesh%KGMAX
+        DO i=Mesh%IGMIN,Mesh%IGMAX
+          ! some up all yvelocities along the y-direction
+          wi = SUM(p%velocity%data4d(i,Mesh%JMIN:Mesh%JMAX,k,2))
 #ifdef PARALLEL
-        ! extend the sum over all partitions
-        IF(Mesh%dims(2).GT.1) THEN
-           CALL MPI_AllReduce(MPI_IN_PLACE, wi, 1, DEFAULT_MPI_REAL, MPI_SUM, &
-                              Mesh%Jcomm, ierror)
-        END IF
+          ! extend the sum over all partitions
+          IF(Mesh%dims(2).GT.1) THEN
+            CALL MPI_AllReduce(MPI_IN_PLACE, wi, 1, DEFAULT_MPI_REAL, MPI_SUM, &
+                                Mesh%Jcomm, ierror)
+          END IF
 #endif
-        ! set new background velocity to the arithmetic mean of the
-        ! yvelocity field along the y-direction
-        w(i,k) = wi / Mesh%JNUM
+          ! set new background velocity to the arithmetic mean of the
+          ! yvelocity field along the y-direction
+          w(i,k) = wi / Mesh%JNUM
+        END DO
       END DO
-    END DO
+    END SELECT
   END SUBROUTINE CalcBackgroundVelocity
 
 
+  !> Compute velocity leading to a centrifugal acceleration with
+  !! respect to some given axis of rotation which balances any
+  !! local radial acceleration. If the acceleration is not given
+  !! explicitly determine it from a complete evaluation of
+  !! of the right hand side of the transport problem.
+  !!
+  !! The algorithm follows these steps:
+  !!
+  !! 1. Get curvilinear components of the vectors pointing
+  !!    from the origin/center of rotation into each cell.
+  !! 2. Get curvilinear components of the vectors pointing
+  !!    from the axis of rotation perpendicular to that axis
+  !!    into each cell, i. e.
+  !!      \f[ \vec{R} = \vec{r} - (\hat{e}_\Omega\cdot\vec{r})\hat{e}_\Omega \f].
+  !!    and the components of the azimuthal unit vector in terms
+  !!    of the local orthnormal basis
+  !!      \f[ \hat{e}_\varphi = \hat{e}_\Omega \times \vec{r} / r \f]
+  !! 3. Determine the acceleration to balance.
+  !! 4. Compute absolute value of azimuthal velocity using the balance law
+  !!    \f[ \Omega^2 R\hat{e}_R = -\vec{a} \Leftrightarrow
+  !!        v_\varphi = \sqrt{\Omega^2 R^2} = \sqrt{-R \hat{e}_R\cdot\vec{a}} \f]
+  !! 5. Compute components of \f$ v_\varphi \hat{e}_\varphi \f$ with respect
+  !!    to the local orthonormal basis.
+  !!
+  !! \todo move code depending on physics into appropriate subroutines
+  !! in physics modules
   FUNCTION GetCentrifugalVelocity(this,Mesh,Physics,Fluxes,Sources,&
-                       dir_omega_,accel_,centrot) RESULT(velo)
+                       dir_omega_,accel_,centrot) RESULT(velocity)
     USE physics_euler_mod, ONLY: physics_euler
     USE physics_eulerisotherm_mod, ONLY: physics_eulerisotherm
     IMPLICIT NONE
@@ -1791,129 +1834,177 @@ CONTAINS
     CLASS(physics_base),  INTENT(INOUT) :: Physics
     CLASS(fluxes_base),   INTENT(INOUT) :: Fluxes
     CLASS(sources_base),  POINTER       :: Sources
-    REAL, DIMENSION(3),   INTENT(IN)    :: dir_omega_
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,3), OPTIONAL, &
-                          INTENT(IN)    :: accel_
-    REAL, DIMENSION(3), OPTIONAL, &
-                          INTENT(IN)    :: centrot
+    REAL, OPTIONAL,       INTENT(IN)    :: dir_omega_(3)
+    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Physics%VDIM), &
+                OPTIONAL, INTENT(IN)    :: accel_
+    REAL, OPTIONAL,       INTENT(IN)    :: centrot(3)
     REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Physics%VDIM) &
-                                        :: velo
+                                        :: velocity
     !------------------------------------------------------------------------!
-!     REAL               :: time
-    REAL, DIMENSION(3) :: dir_omega
-    REAL               :: omega2
-    INTEGER            :: k
-!     REAL               :: rotoemga
-    REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,3) &
-                       :: bccart, bcposvec,  accel
-    REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX) &
-                       :: tmp
+    CLASS(marray_base), ALLOCATABLE &
+                       :: accel,dist_axis_projected,ephi_projected,eomega,tmpvec, &
+                          posvec,tmp
+    REAL               :: omega2,dir_omega(3)
+    INTEGER            :: k,l,err
     !------------------------------------------------------------------------!
+    ALLOCATE(accel,dist_axis_projected,ephi_projected,posvec,eomega,tmpvec,tmp, &
+             STAT=err)
+    IF (err.NE.0) CALL this%Error("timedisc_base::GetCentrifugalVelocity", &
+                       "Unable to allocate memory.")
+    ! initialize marrays
+    tmp    = marray_base()
+    tmpvec = marray_base(3)
+    eomega = marray_base(3)
+    posvec = marray_base(3)
+    dist_axis_projected = marray_base(Physics%VDIM)
+    ephi_projected      = marray_base(Physics%VDIM)
+    accel               = marray_base(Physics%VDIM)
 
-    IF(PRESENT(accel_)) THEN
-      accel = accel_
-    ELSE
-      ! Works only for centrot = 0
-      IF(PRESENT(centrot)) &
-        CALL this%Error("GetCentrifugalVelocity","You are not allowed to "&
-          //"define centrot without accel.")
-      ! This may not work for physics with unusual conservative variables.
-      ! We assume
-      !   conservative momentum = density * velocity
-      ! This is not true for the second component of physics with
-      ! angular momentum transport, but that component should be zero.
-      SELECT TYPE(Physics)
-      TYPE IS(physics_euler)
-        ! do nothing
-      TYPE IS(physics_eulerisotherm)
-        ! do nothing
-      CLASS DEFAULT
-        CALL this%Error("GetCentrifugalVelocity","It is unknown, if the "&
-          //"selected physics module works with this routine.")
-      END SELECT
-      CALL this%ComputeRHS(Mesh,Physics,Sources,Fluxes,this%time,0.0,this%pvar,this%cvar,this%checkdatabm,this%rhs)
-      ! HERE DEPENDEND ON Physics
-      DO k=Physics%XMOMENTUM,Physics%XMOMENTUM+Physics%VDIM-1
-        accel(:,:,:,k-Physics%XMOMENTUM+1) = -1. * this%rhs%data4d(:,:,:,k) &
-                                           / this%pvar%data4d(:,:,:,Physics%DENSITY)
-      END DO
-    END IF
-
-    dir_omega = dir_omega_
-
-    ! be sure: |dir_omega| == 1
-    omega2 = SUM(dir_omega(:)*dir_omega(:))
-    ! omega must not be the zero vector
-    IF (omega2 .EQ. 0.0) &
-        CALL this%Error("GetCentrifugalVelocity", &
+    ! do some sanity checks on the input data
+    IF (PRESENT(dir_omega_)) THEN
+      dir_omega(:) = dir_omega_(:)
+      omega2 = SUM(dir_omega(:)*dir_omega(:))
+      ! omega must not be the zero vector
+      IF (.NOT. (omega2.GT.0.0)) &
+        CALL this%Error("timedisc_base::GetCentrifugalVelocity", &
            "omega must not be the zero vector")
-    ! norm must be one
-    IF (omega2 .NE. 1.0) dir_omega(:) = dir_omega(:) / SQRT(omega2)
-
-    IF ((Physics%VDIM .EQ. 2) .AND. &
-        ((dir_omega(1) .NE. 0.0) .OR. (dir_omega(2) .NE. 0.0))) &
-        CALL this%Error("GetCentrifugalVelocity", &
-           "the direction of omega should be (0,0,+-1) in case of two dimensions")
-
-
-    IF (present(centrot)) THEN
-      ! translate the position vector to the center of rotation
-      bccart(:,:,:,1) = Mesh%bccart(:,:,:,1) - centrot(1)
-      bccart(:,:,:,2) = Mesh%bccart(:,:,:,2) - centrot(2)
-
-      ! compute curvilinear components of translated position vectors
-      CALL Mesh%Geometry%Convert2Curvilinear(Mesh%bcenter,bccart,bcposvec)
+      ! normalize dir_omega
+      dir_omega(:) = dir_omega(:) / SQRT(omega2)
     ELSE
-      bcposvec = Mesh%posvec%bcenter
+      ! default is rotation in a plane perpendicular to ê_z
+      dir_omega(1:3) = (/ 0.0, 0.0, 1.0 /)
     END IF
 
+    ! compute (local) curvilinear vector components of the unit
+    ! vectors pointing in the direction of the rotational axis
+    tmpvec%data2d(:,1) = dir_omega(1)
+    tmpvec%data2d(:,2) = dir_omega(2)
+    tmpvec%data2d(:,3) = dir_omega(3)
+    CALL Mesh%Geometry%Convert2Curvilinear(Mesh%bcenter,tmpvec%data4d,eomega%data4d)
 
-    ! compute distance to axis of rotation (It is automatically fulfilled in 2D.)
-    IF (Physics%VDIM .GT. 2) THEN
-      tmp(:,:,:) =  bcposvec(:,:,:,1)*dir_omega(1) &
-                  + bcposvec(:,:,:,2)*dir_omega(2) &
-                  + bcposvec(:,:,:,3)*dir_omega(3)
-      bcposvec(:,:,:,1) = bcposvec(:,:,:,1) - tmp(:,:,:)*dir_omega(1)
-      bcposvec(:,:,:,2) = bcposvec(:,:,:,2) - tmp(:,:,:)*dir_omega(2)
-      bcposvec(:,:,:,3) = bcposvec(:,:,:,3) - tmp(:,:,:)*dir_omega(3)
+    ! 1. Get the curvilinear components of all vectors pointing
+    ! from the center of rotation into each cell using cartesian
+    ! coordinates.
+    ! The cartesian coordinates are the components of the position
+    ! vector with respect to the cartesian standard orthonormal
+    ! basis {ê_x, ê_y, ê_z}.
+    IF (PRESENT(centrot)) THEN
+      IF ((Mesh%rotsym.GT.0.0).AND.ANY(centrot(:).NE.0.0)) &
+        CALL this%Error("timedisc_base::GetCentrifugalVelocity", &
+           "if rotational symmetry is enabled center of rotation must be the origin")
+      ! Translate the position vector to the center of rotation.
+      DO k=1,3
+        tmpvec%data4d(:,:,:,k) = Mesh%bccart(:,:,:,k) - centrot(k)
+      END DO
+      ! compute curvilinear components of translated position vectors
+      CALL Mesh%Geometry%Convert2Curvilinear(Mesh%bcenter,tmpvec%data4d,posvec%data4d)
+    ELSE
+      ! default center of rotation is the origin of the mesh
+      ! -> use position vectors with respect to the origin
+      posvec%data4d = Mesh%posvec%bcenter
     END IF
 
-    ! compute omega = SQRT(-dot(g,r)/|r|**2)
-    tmp(:,:,:) = SQRT(MAX(0.0,-SUM(accel(:,:,:,1:3)*bcposvec(:,:,:,:),DIM=4))&
-                    / SUM(bcposvec(:,:,:,:)*bcposvec(:,:,:,:),DIM=4))
+    ! 2. Compute vectors pointing from axis of rotation into each cell
+    !    and the azimuthal unit vector ephi
+    tmp%data1d(:) = SUM(posvec%data2d(:,:)*eomega%data2d(:,:),DIM=2)
+    posvec%data2d(:,1) = posvec%data2d(:,1) - tmp%data1d(:)*eomega%data2d(:,1)
+    posvec%data2d(:,2) = posvec%data2d(:,2) - tmp%data1d(:)*eomega%data2d(:,2)
+    posvec%data2d(:,3) = posvec%data2d(:,3) - tmp%data1d(:)*eomega%data2d(:,3)
 
-    ! v / |omega| = dir_omega x r
-    velo(:,:,:,:) = CROSS_PRODUCT(Mesh,Physics,dir_omega,bcposvec)
-    ! v = |omega| * dir_omega x r
+    ! distance to axis
+    tmp%data1d(:) = SQRT(SUM(posvec%data2d(:,:)*posvec%data2d(:,:),DIM=2))
+    ! use tmpvec for temporary storage of ephi
+    CALL cross_product(eomega%data2d(:,1),eomega%data2d(:,2),eomega%data2d(:,3), &
+      posvec%data2d(:,1)/tmp%data1d(:),posvec%data2d(:,2)/tmp%data1d(:), &
+      posvec%data2d(:,3)/tmp%data1d(:),tmpvec%data2d(:,1),tmpvec%data2d(:,2),tmpvec%data2d(:,3))
+
+    ! project it onto the mesh
+    SELECT TYPE(phys => Physics)
+    CLASS IS(physics_eulerisotherm)
+      l = 1
+      DO k=1,3
+        ! check if vector component is used
+        IF (BTEST(Mesh%VECTOR_COMPONENTS,k-1)) THEN
+          dist_axis_projected%data2d(:,l) = posvec%data2d(:,k)
+          ephi_projected%data2d(:,l) = tmpvec%data2d(:,k)
+          l = l + 1
+        END IF
+      END DO
+    CLASS DEFAULT
+      CALL this%Error("timedisc_base::GetCentrifugalVelocity", &
+        "physics not supported")
+    END SELECT
+
+    ! 3. determine the acceleration
+    IF(PRESENT(accel_)) THEN
+      accel%data4d(:,:,:,:) = accel_(:,:,:,:)
+    ELSE
+      ! Works only for centrot = (0,0,0)
+      IF(PRESENT(centrot)) THEN
+        IF(ANY(centrot(:).NE.0.0)) &
+          CALL this%Error("timedisc_base::GetCentrifugalVelocity", &
+            "You are not allowed to define centrot without accel.")
+      END IF
+      ! This may not work for physics with unusual conservative variables.
+      ! We assume:  conservative momentum = density * velocity
+      ! sanity check if someone derives new physics from the euler modules
+      ! which does not have this property
+      SELECT TYPE(phys => Physics)
+      TYPE IS(physics_eulerisotherm)
+        ! supported -> do nothing
+      TYPE IS(physics_euler)
+        ! supported -> do nothing
+      CLASS DEFAULT
+        CALL this%Error("timedisc_base::GetCentrifugalVelocity", &
+          "physics not supported")
+      END SELECT
+      SELECT TYPE(phys => Physics)
+      CLASS IS(physics_eulerisotherm)
+        ! evaluate the right hand side for given (preliminary) initial data
+        CALL this%ComputeRHS(Mesh,phys,Sources,Fluxes,this%time,0.0, &
+                             this%pvar,this%cvar,this%checkdatabm,this%rhs)
+        SELECT TYPE(pvar => this%pvar)
+        CLASS IS(statevector_eulerisotherm)
+          SELECT TYPE(rhs => this%rhs)
+          CLASS IS(statevector_eulerisotherm)
+            DO k=1,phys%VDIM
+              accel%data2d(:,k) = -rhs%momentum%data2d(:,k) / pvar%density%data1d(:)
+            END DO
+          END SELECT
+        END SELECT
+      END SELECT
+    END IF
+
+    ! 4. compute absolute value of azimuthal velocity
+    tmp%data1d(:) = SQRT(MAX(0.0,-SUM(accel%data2d(:,:)*dist_axis_projected%data2d(:,:),DIM=2)))
+
+    ! 5. Compute components of the azimuthal velocity vector
     DO k=1,Physics%VDIM
-      velo(:,:,:,k) = tmp(:,:,:)*velo(:,:,:,k)
+      velocity(:,:,:,k) = tmp%data3d(:,:,:) * ephi_projected%data4d(:,:,:,k)
     END DO
 
+    CALL accel%Destroy()
+    CALL dist_axis_projected%Destroy()
+    CALL ephi_projected%Destroy()
+    CALL posvec%Destroy()
+    CALL eomega%Destroy()
+    CALL tmpvec%Destroy()
+    CALL tmp%Destroy()
+    DEALLOCATE(accel,dist_axis_projected,ephi_projected,posvec,eomega,tmpvec,tmp)
+
   CONTAINS
-    FUNCTION CROSS_PRODUCT(Mesh,Physics,a,b) RESULT(cp)
+
+    ELEMENTAL SUBROUTINE cross_product(ax,ay,az,bx,by,bz,aXbx,aXby,aXbz)
       IMPLICIT NONE
       !------------------------------------------------------------------------!
-      CLASS(mesh_base),    INTENT(IN)    :: Mesh
-      CLASS(physics_base), INTENT(IN) :: Physics
-      REAL, DIMENSION(3),  INTENT(IN) :: a
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,3), &
-                           INTENT(IN) :: b
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Physics%VDIM) &
-                                      :: cp
+      REAL, INTENT(IN)  :: ax,ay,az,bx,by,bz
+      REAL, INTENT(OUT) :: aXbx,aXby,aXbz
       !------------------------------------------------------------------------!
-      SELECT CASE(Physics%VDIM)
-      CASE (2) ! 2D
-        ! => a(1) = a(2) = 0 and a(3) = 1 or -1
-        cp(:,:,:,1) = - a(3)*b(:,:,:,2)
-        cp(:,:,:,2) = a(3)*b(:,:,:,1)
-      CASE (3) ! 3D
-        cp(:,:,:,1) = a(2)*b(:,:,:,3) - a(3)*b(:,:,:,2)
-        cp(:,:,:,2) = a(3)*b(:,:,:,1) - a(1)*b(:,:,:,3)
-        cp(:,:,:,3) = a(1)*b(:,:,:,2) - a(2)*b(:,:,:,1)
-      CASE DEFAULT
-        CALL Mesh%Error("timedisc_base::GetCentrifugalVelocity","only 2D/3D cross product possible")
-      END SELECT
-     END FUNCTION CROSS_PRODUCT
+      aXbx = ay*bz - az*by
+      aXby = az*bx - ax*bz
+      aXbz = ax*by - ay*bx
+    END SUBROUTINE cross_product
+
   END FUNCTION GetCentrifugalVelocity
 
   SUBROUTINE Finalize_base(this)

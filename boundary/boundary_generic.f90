@@ -43,6 +43,7 @@
 !----------------------------------------------------------------------------!
 MODULE boundary_generic_mod
   USE logging_base_mod
+  USE marray_compound_mod
   USE mesh_base_mod
   USE boundary_base_mod
   USE boundary_custom_mod
@@ -282,11 +283,9 @@ CONTAINS
     CLASS(mesh_base),       INTENT(IN)    :: Mesh
     CLASS(physics_base),    INTENT(IN)    :: Physics
     REAL,                   INTENT(IN)    :: time
-    REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Physics%VNUM), &
-                            INTENT(INOUT) :: pvar, cvar
+    CLASS(marray_compound), INTENT(INOUT) :: pvar, cvar
     !------------------------------------------------------------------------!
-    !------------------------------------------------------------------------!
-    CALL Physics%Convert2Primitive(Mesh,Mesh%IMIN,Mesh%IMAX,Mesh%JMIN, &
+    CALL Physics%Convert2Primitive(Mesh%IMIN,Mesh%IMAX,Mesh%JMIN, &
              Mesh%JMAX,Mesh%KMIN,Mesh%KMAX,cvar,pvar)
 
     this%err = 0
@@ -353,7 +352,7 @@ CONTAINS
     END IF
 
 #ifdef PARALLEL
-    CALL MPIBoundaryCommunication(this,Mesh,Physics,pvar)
+    CALL MPIBoundaryCommunication(this,Mesh,Physics,pvar%data4d)
 #endif
 
 #ifdef PARALLEL
@@ -378,21 +377,27 @@ CONTAINS
     END SELECT
 #endif
 
-    CALL SetCornerEdges(this,Mesh,Physics,pvar)
+    CALL SetCornerEdges(this,Mesh,Physics,pvar%data4d)
 
     ! convert primitive variables in ghost cells
-    CALL Physics%Convert2Conservative(Mesh,Mesh%IGMIN,Mesh%IMIN-1, &
-         Mesh%JGMIN,Mesh%JGMAX,Mesh%KGMIN,Mesh%KGMAX,pvar,cvar)
-    CALL Physics%Convert2Conservative(Mesh,Mesh%IMAX+1,Mesh%IGMAX, &
-         Mesh%JGMIN,Mesh%JGMAX,Mesh%KGMIN,Mesh%KGMAX,pvar,cvar)
-    CALL Physics%Convert2Conservative(Mesh,Mesh%IMIN,Mesh%IMAX,    &
-         Mesh%JGMIN,Mesh%JMIN-1,Mesh%KGMIN,Mesh%KGMAX,pvar,cvar)
-    CALL Physics%Convert2Conservative(Mesh,Mesh%IMIN,Mesh%IMAX,    &
-         Mesh%JMAX+1,Mesh%JGMAX,Mesh%KGMIN,Mesh%KGMAX,pvar,cvar)
-    CALL Physics%Convert2Conservative(Mesh,Mesh%IMIN,Mesh%IMAX,    &
-         Mesh%JMIN,Mesh%JMAX,Mesh%KGMIN,Mesh%KMIN-1,pvar,cvar)
-    CALL Physics%Convert2Conservative(Mesh,Mesh%IMIN,Mesh%IMAX,    &
-         Mesh%JMIN,Mesh%JMAX,Mesh%KMAX+1,Mesh%KGMAX,pvar,cvar)
+    IF (Mesh%INUM.GT.1) THEN
+      CALL Physics%Convert2Conservative(Mesh%IGMIN,Mesh%IMIN-Mesh%IP1, &
+          Mesh%JGMIN,Mesh%JGMAX,Mesh%KGMIN,Mesh%KGMAX,pvar,cvar)
+      CALL Physics%Convert2Conservative(Mesh%IMAX+Mesh%IP1,Mesh%IGMAX, &
+          Mesh%JGMIN,Mesh%JGMAX,Mesh%KGMIN,Mesh%KGMAX,pvar,cvar)
+    END IF
+    IF (Mesh%JNUM.GT.1) THEN
+      CALL Physics%Convert2Conservative(Mesh%IMIN,Mesh%IMAX,    &
+            Mesh%JGMIN,Mesh%JMIN-Mesh%JP1,Mesh%KGMIN,Mesh%KGMAX,pvar,cvar)
+      CALL Physics%Convert2Conservative(Mesh%IMIN,Mesh%IMAX,    &
+            Mesh%JMAX+Mesh%JP1,Mesh%JGMAX,Mesh%KGMIN,Mesh%KGMAX,pvar,cvar)
+    END IF
+    IF (Mesh%KNUM.GT.1) THEN
+      CALL Physics%Convert2Conservative(Mesh%IMIN,Mesh%IMAX,    &
+          Mesh%JMIN,Mesh%JMAX,Mesh%KGMIN,Mesh%KMIN-Mesh%KP1,pvar,cvar)
+      CALL Physics%Convert2Conservative(Mesh%IMIN,Mesh%IMAX,    &
+          Mesh%JMIN,Mesh%JMAX,Mesh%KMAX+Mesh%KP1,Mesh%KGMAX,pvar,cvar)
+    END IF
   END SUBROUTINE CenterBoundary
 
 

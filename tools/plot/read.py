@@ -129,7 +129,7 @@ class read(object):
             self.stats[k] += 1
         try:
             return self.data[k].T
-        except(ValueError):
+        except(KeyError):
             if default is not None:
                 return default
             print("Available keys:")
@@ -140,7 +140,7 @@ class read(object):
         return self.get(k)
 
     def keys(self):
-        return sorted(self.dtype.names)
+        return sorted(list(self.dtype.keys()))
 
     def getNumber(self):
         return int(
@@ -173,6 +173,7 @@ class read(object):
 
         self.dtype = dict()
 
+
         with open(self.filenames[0], 'rb') as m:
             f = mmap.mmap(m.fileno(), 0, mmap.MAP_SHARED, mmap.PROT_READ)
             self.magic, self.endian, self.version, self.realsize, self.intsize \
@@ -196,7 +197,7 @@ class read(object):
                 if datalen > 0:
                     dims = datalen
                     if t in [6, 7, 8, 12]:
-                        translate = {6: 2, 7: 3, 8: 4, 12: 5}
+                        translate = {6: 3, 7: 3, 8: 4, 12: 5}
                         d = translate[t]
                         datalen -= d * self.intsize
                         dims = tuple(
@@ -226,29 +227,7 @@ class read(object):
                 buffer=self.file,
                 dtype=dtscalar,
                 offset=offset)
-#            print(key, d[key].shape)
         return d
-
-#    def _openFile(self, i):
-#        try:
-#            f = np.memmap(self.filenames[i], dtype=self.dtype, mode='r')
-#            return f
-#        except:
-#            print("Warning: Could not open file '%s'." % self.filenames[i])
-
-#    def _openFiles(self):
-#        self.files = list()
-#        self.frame = 0
-#        for filename in self.filenames:
-#            try:
-#                file = np.memmap(filename, dtype=self.dtype, mode='r')
-#            except:
-#                print("Warning: Could not open file '%s'." % filename)
-#                pass
-#            self.files.append(file)
-#            self.frame += 1
-#        self.N = len(self.files)
-
 
 class cache(OrderedDict):
 

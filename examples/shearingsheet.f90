@@ -61,8 +61,8 @@
 !!  velocity \f$ v_y \f$ | \f$ \delta v_y \f$
 !!  random velocities \f$ \delta v_x, \delta v_y \f$ | \f$ < c_{\mathrm{s}} \f$
 !! </div> <div class="col-md-6">
-!!   \image html http://www.astrophysik.uni-kiel.de/fosite/1024_beta10_vanleer_gamma2.png "slow cooling"
-!!   \image html http://www.astrophysik.uni-kiel.de/fosite/1024_beta2_vanleer_gamma2.png "fast cooling"
+!!   <img src="http://www.astrophysik.uni-kiel.de/fosite/1024_beta10_vanleer_gamma2.png" class="img-fluid img-thumbnail" alt="slow cooling">
+!!   <img src="http://www.astrophysik.uni-kiel.de/fosite/1024_beta2_vanleer_gamma2.png" class="img-fluid img-thumbnail" alt="fastcooling">
 !! </div> </div>
 !! You can find some [movies] (shearingsheet.html) showing the temporal evolution of the
 !! column density in the [gallery] (gallery.html).
@@ -78,6 +78,9 @@
 !----------------------------------------------------------------------------!
 PROGRAM shearingsheet
   USE fosite_mod
+#ifdef NECSXAURORA
+  USE asl_unified
+#endif
 #ifdef PARALLEL
 #ifdef HAVE_MPI_MOD
   USE mpi
@@ -96,7 +99,7 @@ PROGRAM shearingsheet
   ! simulation parameter
   REAL, PARAMETER    :: OMEGA      = 1.0            ! rotation at fid. point !
   REAL, PARAMETER    :: SIGMA0     = 1.0            ! mean surf.dens.        !
-  REAL, PARAMETER    :: TSIM       = 100./OMEGA       ! simulation time        !
+  REAL, PARAMETER    :: TSIM       = 100./OMEGA     ! simulation time        !
   REAL, PARAMETER    :: GAMMA      = 2.0            ! dep. on vert. struct.  !
   REAL, PARAMETER    :: BETA_C     = 10.0           ! cooling parameter      !
 !  REAL, PARAMETER    :: BETA_C     = 2.0           ! 2 -> collapse          !
@@ -110,7 +113,7 @@ PROGRAM shearingsheet
   REAL               :: DOMAINX    = 320.0          ! domain size [GEOM]     !
   REAL               :: DOMAINY    = 320.0          ! domain size [GEOM]     !
   ! number of output time steps
-  INTEGER, PARAMETER :: ONUM       = 10
+  INTEGER, PARAMETER :: ONUM       = 100
   ! output directory and output name
   CHARACTER(LEN=256), PARAMETER :: ODIR   = "./"
   CHARACTER(LEN=256), PARAMETER :: OFNAME = "shearingsheet"
@@ -120,12 +123,21 @@ PROGRAM shearingsheet
 
 ALLOCATE(Sim)
 
+#ifdef NECSXAURORA
+CALL asl_library_initialize()
+#endif
+
 CALL Sim%InitFosite()
 CALL MakeConfig(Sim, Sim%config)
 CALL Sim%Setup()
 CALL InitData(Sim%Mesh, Sim%Physics, Sim%Timedisc%pvar, Sim%Timedisc%cvar)
 CALL Sim%Run()
 CALL Sim%Finalize()
+
+
+#ifdef NECSXAURORA
+CALL asl_library_finalize()
+#endif
 
 DEALLOCATE(Sim)
 
@@ -173,7 +185,8 @@ CONTAINS
                 "ymin"        / YMIN, &
                 "ymax"        / YMAX, &
                 "zmin"        / ZMIN, &
-                "zmax"        / ZMAX &
+                "zmax"        / ZMAX, &
+                "Q"           / Q &
                 )
 
     ! fluxes settings
@@ -188,17 +201,17 @@ CONTAINS
     grav =>     Dict(&
                 "stype"               / GRAVITY, &
                 "self/gtype"          / SBOXSPECTRAL, &
-                "output/accel"        / 0, &
-                "self/output/phi"     / 1, &
+                "self/output/phi"     / 0, &
                 "self/output/accel_x" / 0, &
-                "self/output/accel_y" / 0, &
-                "self/Q"              / Q &
+                "self/output/Fmass2D" / 0, &
+                "self/output/accel_y" / 0 &
                 )
 
     ! parametrized cooling from Gammie (2001)
     cooling =>  Dict(&
                 "stype"        / DISK_COOLING, &
                 "method"       / GAMMIE_SB, &
+                "output/Qcool" / 1, &
                 "b_cool"       / BETA_C &
                 )
 
@@ -220,6 +233,13 @@ CONTAINS
                 "cfl"         / 0.4, &
                 "stoptime"    / TSIM, &
                 "dtlimit"     / 1e-40, &
+                "output/external_sources" / 0, &
+                "output/density_cvar" / 0, &
+                "output/energy" / 0, &
+                "output/xmomentum" / 0, &
+                "output/ymomentum" / 0, &
+                "output/rhs" / 0, &
+                "output/geometrical_sources" / 0, &
                 "maxiter"     / 100000000, &
                 "tol_rel"     / 1.0E-3 &
                 )
@@ -253,6 +273,9 @@ CONTAINS
     REAL              :: SOUNDSPEED
     REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX) &
                       :: rands
+#ifdef NECSXAURORA
+    INTEGER :: rng, n
+#endif
     !------------------------ standard run ----------------------------------!
     SELECT TYPE(p => pvar)
     TYPE IS(statevector_euler)
@@ -265,27 +288,52 @@ CONTAINS
                           Physics%Constants%GN**2.*SIGMA0**3./(GAMMA*OMEGA**2)
 
       ! create random numbers for setup of initial velocities
-      CALL InitRandSeed(Physics)
+#ifndef NECSXAURORA
+    CALL InitRandSeed(Physics)
+#else
+    CALL asl_random_create(rng, ASL_RANDOMMETHOD_MT19937_64)
+    CALL asl_random_distribute_uniform(rng)
+    n = (Mesh%IGMAX-Mesh%IGMIN+1)*(Mesh%JGMAX-Mesh%JGMIN+1)*(Mesh%KGMAX-Mesh%KGMIN+1)
+#endif
       IF (Mesh%shear_dir.EQ.2) THEN
+#ifndef NECSXAURORA
         CALL RANDOM_NUMBER(rands)
+#else
+        CALL asl_random_generate_d(rng, n, rands)
+#endif
         rands = (rands-0.5)*0.1*SOUNDSPEED
         p%velocity%data4d(:,:,:,1) = rands(:,:,:)
 
+#ifndef NECSXAURORA
         CALL RANDOM_NUMBER(rands)
+#else
+        CALL asl_random_generate_d(rng, n, rands)
+#endif
         rands = (rands-0.5)*0.1*SOUNDSPEED
         p%velocity%data4d(:,:,:,2)  = -Q*OMEGA*Mesh%bcenter(:,:,:,1) + rands(:,:,:)
       ELSE IF (Mesh%shear_dir.EQ.1) THEN
+#ifndef NECSXAURORA
         CALL RANDOM_NUMBER(rands)
+#else
+        CALL asl_random_generate_d(rng, n, rands)
+#endif
         rands = (rands-0.5)*0.1*SOUNDSPEED
         p%velocity%data4d(:,:,:,1) = Q*OMEGA*Mesh%bcenter(:,:,:,2) + rands(:,:,:)
 
+#ifndef NECSXAURORA
         CALL RANDOM_NUMBER(rands)
+#else
+        CALL asl_random_generate_d(rng, n, rands)
+#endif
         rands = (rands-0.5)*0.1*SOUNDSPEED
         p%velocity%data4d(:,:,:,2)  = rands(:,:,:)
       END IF
     CLASS DEFAULT
       CALL Physics%Error("shear::InitData","only non-isothermal HD supported")
     END SELECT
+#ifdef NECSXAURORA
+    CALL asl_random_destroy(rng)
+#endif
     !------------------------------------------------------------------------!
     CALL Physics%Convert2Conservative(pvar,cvar)
     CALL Mesh%Info(" DATA-----> initial condition: " // &

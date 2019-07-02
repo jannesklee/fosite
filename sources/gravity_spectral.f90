@@ -31,14 +31,12 @@
 !> \author Manuel Jung
 !! \author Jannes Klee
 !!
-!! \brief poisson solver via spectral methods and direct integration
+!! \brief 2D poisson solver using spectral methods for direct integration
 !!
-!! \attention This is a 2D solver and works only in flat, polar geometries. This
-!!            is why it should be paid attention to the dimension of the
-!!            arrays. They where only made allocated 3D when necessary.
-!!
-!! \cite chan2006
-!! \cite li2009
+!! This code implements the methods described in \cite chan2006 and \cite li2009 .
+!! It is a native 2D solver and works only in flat, polar geometries. This is why
+!! it should be paid attention to the dimension of the arrays. They where only
+!! allocated in 3D if necessary.
 !----------------------------------------------------------------------------!
 MODULE gravity_spectral_mod
   USE gravity_base_mod
@@ -210,16 +208,16 @@ MODULE gravity_spectral_mod
     ! >0 : automatic setting of mcut
     CALL GetAttr(config, "ecut", this%ecut, 0.)
 
-    CALL this%Info("        --> Initializing")
+    CALL this%Info("            Initializing")
 
     WRITE (info_str, '(I8)') this%green
-    CALL this%Info("        --> green-fn type:     " // TRIM(info_str))
+    CALL this%Info("            green-fn type:     " // TRIM(info_str))
     WRITE (info_str, '(ES8.2)') this%sigma
-    CALL this%Info("        --> sigma:             " // TRIM(info_str))
+    CALL this%Info("            sigma:             " // TRIM(info_str))
 
 
     !\todo only 2D variables
-    this%p_FI = fftw_alloc_real(INT(2*this%MNUM * (this%INUM)*(Mesh%INUM), C_SIZE_T))
+    This%p_FI = fftw_alloc_real(INT(2*this%MNUM * (this%INUM)*(Mesh%INUM), C_SIZE_T))
     CALL C_F_POINTER(this%p_FI, this%FI, &
                      [2*this%MNUM,this%INUM,Mesh%INUM])
     CALL C_F_POINTER(this%p_FI, this%cFI, &
@@ -282,11 +280,12 @@ MODULE gravity_spectral_mod
                        this%displ, 1, MPI_INTEGER, MPI_COMM_WORLD, this%mpi_error)
     CALL MPI_AllGather(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, &
                        this%num, 1, MPI_INTEGER, MPI_COMM_WORLD, this%mpi_error)
+
 #endif
 
     CALL this%PrecomputeI(Mesh, Physics)
 
-    CALL this%Info("        --> .. done initializing")
+    CALL this%Info("            .. done initializing")
 #endif
 
   END SUBROUTINE InitGravity_spectral
@@ -390,8 +389,11 @@ MODULE gravity_spectral_mod
 
     ! or with real numbers, real and imaginary part seperate:
     this%FPhi(:,:) = 0.
+!NEC$ IVDEP
     DO i0=1,Mesh%INUM
+!NEC$ IVDEP
       DO i=1,this%INUM
+!NEC$ IVDEP
         DO m=1,this%mcut
            ! real part
            this%FPhi(2*m-1,i) = this%FPhi(2*m-1,i) &
@@ -441,21 +443,25 @@ MODULE gravity_spectral_mod
 
   !> Green's function
   !!
-  !! This is integral, which has to be calculated for a general \f$ Z(r,z) \f$
+  !! The Green's function for an arbitrary vertical disk profile \f$ Z(r,z) \f$ is given by the integral
   !! \f[
-  !!    G = \int_{-\infty}^{\infty} -\frac{Z(r_1,z_1)}{\sqrt{r^2+r'^2 - 2\,r\,r'\cos{(\phi)} +
-  !!    \epsilon^2 + z'^2} dz_1.
+  !!    G(r,r',\varphi) = -\int_{-\infty}^{\infty} \frac{Z(r',z')}{\sqrt{r^2+r'^2 - 2\,r\,r'\cos{(\varphi)}
+  !!                                                               + \varepsilon^2 + z'^2}} dz'.
   !! \f]
-  !! For a vertical Gaussian density distribution \f$ Z(r,z) \f$
+  !! where \f$ \varepsilon \f$ is a smoothing parameter to avoid division by zero. This
+  !! integral can be evaluated analytically, e. g., for a vertical Gaussian density distribution
   !! \f[
-  !!    Z(r,z) = (2\pi(H(r))^2)^{-0.5}\exp{(-\frac{z^2}{2(H(r))^2})}
+  !!    Z(r,z) = \frac{1}{\sqrt{2\pi H^2}} \exp{\left(-\tfrac{z^2}{2 H^2}\right)}
   !! \f]
-  !! this integral can be evaluated analyticly, which results in
+  !! with pressure scale height \f$ H(r) \f$ depending only on the radial coordinate.
+  !! In this case the Green's function is given by
   !! \f[
-  !!    G(r,r',\phi) = - \frac{\exp{(R^2/4)} * K_0(R^2/4)}{\sqrt{2*\pi} * H(r')},
+  !!    G(r,r',\varphi) = - \frac{\exp{\left(\tfrac{R^2}{4}\right)}
+  !!                        K_0\left(\tfrac{R^2}{4}\right)}{\sqrt{2\pi} H(r')},
+  !!    \quad\textsf{with}\quad
+  !!    R^2 = \frac{r^2 + r'^2 - 2\,r\,r'\cos{(\varphi)} + \varepsilon^2}{H(r')^2}
   !! \f]
-  !! with \f$ R^2 = r^2 + r'^2 - 2\,r\,r'\cos{(\phi)} + \epsilon^2)/(H(r'))^2 \f$
-  !! and \f$ K_0 \f$ the modified Bessel function of the second kind.
+  !! where \f$ K_0(x) \f$ is the modified Bessel function of the second kind of order 0.
 #ifdef HAVE_FFTW
   ELEMENTAL FUNCTION GreenFunction(dr2, green, sigma) RESULT(G)
     IMPLICIT NONE
@@ -482,25 +488,11 @@ MODULE gravity_spectral_mod
 
   !> Precomputes the fourier transform
   !!
-  !! Precompute the fourier transform with respect to \f$ \Phi-\Phi' \f$ of
+  !! Precompute the fourier transform with respect to \f$ \varphi-\varphi' \f$ of
   !! \f[
-  !!    I(r,r',\Phi-\Phi') = 2 * \pi * r' * G(r,r',\Phi-\Phi'),
-  !! \f}
-  !! where G is the softened Green's function.
-  !!
-  !! In the case of a gaussian density distribution in the z direction,
-  !! we have:
-  !! \f[
-  !!    Z(r,z) = (2*\pi*H(r))^{0.5} * \exp{( -z^2 / (2*(H(r))^2) )},
+  !!    I(r,r',\varphi-\varphi') = 2 \pi r' G(r,r',\varphi-\varphi'),
   !! \f]
-  !! and therefore as Green's function:
-  !! \f[
-  !!    G(r,r',Phi-Phi') = -\left(exp(R^2/4)*K_0(R^2/4))/(\sqrt{2*pi}*H(r')\right),
-  !! \f]
-  !! with \f$ R^2 = \left(r^2 + r'^2 - 2\,r\,r'\,\cos{(\Phi-\Phi')} + \epsilon^2) /
-  !! (H(r')\right)^2 \f$
-  !!
-  !! (epsilon is a small softening parameter)
+  !! where \f$ G(r,r',\varphi-\varphi') \f$ is the softened Green's function (see \ref greenfunction )
 #ifdef HAVE_FFTW
   SUBROUTINE PrecomputeI(this, Mesh, Physics)
    IMPLICIT NONE
@@ -565,13 +557,14 @@ MODULE gravity_spectral_mod
 
     DO k=Mesh%KMIN,Mesh%KMAX
       DO i1=1,Mesh%INUM
+!NEC$ IVDEP
         DO i=Mesh%IMIN,this%IMAX
           DO j=Mesh%JMIN,Mesh%JMAX
             r0 = Mesh%radius%faces(i,j,k,1)
             dr2(j,i) = r(i1)**2 + r0**2 - 2.*r(i1)*r0*COS(phi(j))
           END DO
         END DO
-!CDIR IEXPAND
+
         this%FI(1:Mesh%JNUM,1:this%INUM,i1) &
           = 2.0 * PI * hx(i1) * hy(i1) * Mesh%dx &
           * Physics%Constants%GN &
@@ -628,8 +621,11 @@ MODULE gravity_spectral_mod
     !            acceleration are set to zero in InitGravity_spectral
     ! \todo This difference quotient is still 2D and only the third component is
     !       added. It will not work in 3D.
+!NEC$ IVDEP
     DO k = Mesh%KMIN,Mesh%KMAX
+!NEC$ IVDEP
       DO j = Mesh%JMIN-Mesh%JP1,Mesh%JMAX+Mesh%JP1
+!NEC$ IVDEP
         DO i = Mesh%IMIN-Mesh%IP1,Mesh%IMAX
           this%accel%data4d(i,j,k,1) = -1.0*(this%phi2D(i+1,j)-this%phi2D(i,j))/Mesh%dlx%data3d(i,j,k)
           this%accel%data4d(i,j,k,2) = -1.0*(this%phi2D(i+1,j+1)+this%phi2D(i,j+1) &

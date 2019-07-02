@@ -2,15 +2,21 @@
 cmake_minimum_required (VERSION 2.8.10)
 project (FOSITE NONE)
 
-# get the latest git version tag and commit hash
-# adds "-dirty" if working tree is not clean
-execute_process(
-  COMMAND git describe --tag --dirty
-  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-  OUTPUT_VARIABLE GIT_VERSION
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-add_compile_options("-DVERSION=\"${GIT_VERSION}\"")
+# detect git
+find_package(Git)
+if(Git_FOUND)
+  # get the latest git version tag and commit hash
+  # adds "-dirty" if working tree is not clean
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} describe --tag --dirty
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  add_definitions("-DVERSION=\"${GIT_VERSION}\"")
+else()
+  add_definitions("-DVERSION=\"0.8.2\"") 
+endif()
 
 # make sure that the default is a RELEASE
 if (NOT CMAKE_BUILD_TYPE)
@@ -26,32 +32,23 @@ set (CMAKE_INSTALL_PREFIX ${default_prefix} CACHE STRING
       FORCE)
 
 #------------------------ command line options -------------------------#
-enable_language (Fortran)
-# workaround for unknown compiler ID NEC
-if (CMAKE_Fortran_COMPILER MATCHES ".*nfort")
-  set(CMAKE_Fortran_COMPILER_ID "NEC")
-endif()
-enable_testing()
-
 option(PARALLEL "PARALLEL" OFF)
 option(MPI_USE_SENDRECV "MPI_USE_SENDRECV" ON)
 option(USE_MPI_MOD "USE_MPI_MOD" ON)
 if (PARALLEL MATCHES "ON")
   message(STATUS "Configuring parallel build using MPI")
-  add_compile_options(-DPARALLEL)
+  add_definitions(-DPARALLEL)
   if(USE_MPI_MOD MATCHES "ON")
-    add_compile_options(-DHAVE_MPI_MOD)
+    add_definitions(-DHAVE_MPI_MOD)
   else()
-    add_compile_options(-DHAVE_MPIF_H)
+    add_definitions(-DHAVE_MPIF_H)
   endif()
   if(MPI_USE_SENDRECV MATCHES "ON")
-    add_compile_options(-DMPI_USE_SENDRECV)
+    add_definitions(-DMPI_USE_SENDRECV)
   endif()
-  if (CMAKE_Fortran_COMPILER_ID MATCHES "NEC")
-    set(CMAKE_Fortran_COMPILER_NAMES mpinfort)
-    set(CMAKE_Fortran_COMPILER mpinfort)
+  if (CMAKE_SYSTEM_NAME MATCHES "SX-Aurora")
+    set(CMAKE_Fortran_COMPILER ${MPI_Fortran_COMPILER})
   else()
-    set(CMAKE_Fortran_COMPILER_NAMES mpifort)
     set(CMAKE_Fortran_COMPILER mpifort)
     message(WARNING
       "There is a known problem causing segfaults with OpenMPI \
@@ -60,6 +57,14 @@ if (PARALLEL MATCHES "ON")
       please consider to try another version or the MPICH implementation.")
   endif()
 endif()
+
+enable_language (Fortran)
+# workaround for unknown compiler ID NEC
+if (CMAKE_Fortran_COMPILER MATCHES "(.*)nfort")
+  message(STATUS "Fortran compiler ID set to NEC")
+  set(CMAKE_Fortran_COMPILER_ID "NEC")
+endif()
+enable_testing()
 
 set (X86_VECTOR_EXTENSION NONE CACHE STRING "Enable x86 vector extensions, possible values are: NONE AVX AVX2 AVX-512")
 
@@ -82,8 +87,8 @@ if (CMAKE_Fortran_COMPILER_ID MATCHES "GNU")
   set (CMAKE_Fortran_FLAGS_RELEASE "-funroll-all-loops -fno-f2c -O3")
   set (CMAKE_Fortran_FLAGS_PROFILING "-funroll-all-loops -fno-f2c -O3 -pg -no-pie")
   set (CMAKE_Fortran_FLAGS_DEBUG   "-fno-f2c -O2 -g -fcheck=all -Wunused")
-  if(CMAKE_Fortran_COMPILER_VERSION VERSION_LESS 6.3)
-    message(FATAL_ERROR "gfortran must be at least version 6.3")
+  if(CMAKE_Fortran_COMPILER_VERSION VERSION_LESS 6.2)
+    message(FATAL_ERROR "gfortran must be at least version 6.2")
   endif()
 elseif (CMAKE_Fortran_COMPILER_ID MATCHES "Intel")
   # intel Fortran compiler, i.e. ifort
@@ -94,7 +99,7 @@ elseif (CMAKE_Fortran_COMPILER_ID MATCHES "Intel")
 elseif (CMAKE_Fortran_COMPILER_ID MATCHES "NEC")
   add_compile_options(-report-all -proginf -fdefault-real=8 -x f95-cpp-input)
   set (CMAKE_Fortran_FLAGS_RELEASE "-finline-max-depth=5 -finline-max-function-size=150 -finline-functions -floop-collapse")
-  set (CMAKE_Fortran_FLAGS_DEBUG   "-O1 -g -fcheck=all")
+  set (CMAKE_Fortran_FLAGS_DEBUG   "-O1 -g -fcheck=all -finline-max-depth=5 -finline-functions")
   set (CMAKE_Fortran_FLAGS_PROFILING "-finline-max-depth=5 -finline-max-function-size=150 -finline-functions -floop-collapse -ftrace")
   set (CMAKE_EXE_LINKER_FLAGS "-proginf")
   set (CMAKE_EXE_LINKER_FLAGS_PROFILING "-ftrace")
@@ -113,13 +118,13 @@ if (CMAKE_SYSTEM_NAME MATCHES "(.*)SX-Aurora")
   add_definitions(-DVECTOR_LENGTH="256" -DNECSXAURORA)
 else ()#(CMAKE_SYSTEM_NAME MATCHES "(.*)SX-AURORA")
   if (X86_VECTOR_EXTENSION MATCHES "AVX")
-    add_compile_options(-DVECTOR_LENGTH="16")
+    add_definitions(-DVECTOR_LENGTH="16")
   elseif (X86_VECTOR_EXTENSION MATCHES "AVX2")
-    add_compile_options(-DVECTOR_LENGTH="16")
+    add_definitions(-DVECTOR_LENGTH="16")
   elseif (X86_VECTOR_EXTENSION MATCHES "AVX-512")
-    add_compile_options(-DVECTOR_LENGTH="32")
+    add_definitions(-DVECTOR_LENGTH="32")
   else()
-    add_compile_options(-DVECTOR_LENGTH="1")
+    add_definitions(-DVECTOR_LENGTH="1")
   endif()
 endif ()#(CMAKE_SYSTEM_NAME MATCHES "(.*)SX-AURORA")
 
@@ -127,6 +132,49 @@ MARK_AS_ADVANCED(CMAKE_Fortran_FLAGS_PROFILING
     CMAKE_EXE_LINKER_FLAGS_PROFILING)
 
 
+#----------------------- search GSL ------------------------------------------#
+option(USE_GSL "Add GSL/FGSL support" OFF)
+if(USE_GSL MATCHES ON)
+  find_package(GSL)
+else()
+  set(GSL_FOUND CACHE BOOL FALSE)
+endif()
+if(GSL_FOUND)
+  set(FGSL_SOURCE_DIR ${CMAKE_SOURCE_DIR}/contrib/fgsl) 
+  set(FGSL_BINARY_DIR ${CMAKE_BINARY_DIR}/contrib/fgsl) 
+  include_directories(${GSL_INCLUDE_DIRS} ${FGSL_BINARY_DIR}/include/fgsl)
+  # add gsl fortran interface as external project
+  if(NOT EXISTS "${FGSL_SOURCE_DIR}/configure.ac")
+    message(STATUS "fgsl: found empty source dir -> fetching code")
+    execute_process(
+        COMMAND git submodule update --init --force contrib/fgsl
+	WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  endif()
+  if(NOT EXISTS ${FGSL_SOURCE_DIR}/configure)
+    if(NOT EXISTS ${FGSL_SOURCE_DIR}/m4)
+      file(MAKE_DIRECTORY ${FGSL_SOURCE_DIR}/m4)
+    endif()
+    execute_process(
+      COMMAND autoreconf -i
+      WORKING_DIRECTORY ${FGSL_SOURCE_DIR}
+    )
+  endif()
+  include(ExternalProject)
+  ExternalProject_Add(fgsl
+    PREFIX ${FGSL_BINARY_DIR}
+    SOURCE_DIR ${FGSL_BINARY_DIR}/src
+    BUILD_IN_SOURCE 0
+    BINARY_DIR ${FGSL_BINARY_DIR}/build
+    INSTALL_DIR ${FGSL_BINARY_DIR}
+    DOWNLOAD_DIR ${FGSL_BINARY_DIR}
+    STAMP_DIR ${FGSL_BINARY_DIR}/stamp
+    TMP_DIR ${FGSL_BINARY_DIR}/tmp
+    DOWNLOAD_COMMAND  ${CMAKE_COMMAND} -E remove_directory "${FGSL_BINARY_DIR}/src" && ${CMAKE_COMMAND} -E create_symlink "${FGSL_SOURCE_DIR}" "${FGSL_BINARY_DIR}/src"
+    CONFIGURE_COMMAND ../src/configure -q --prefix=${FGSL_BINARY_DIR}
+    BUILD_COMMAND make
+    INSTALL_COMMAND make install)
+  add_definitions(-DHAVE_FGSL)
+endif()
 
 #----------------------- search FFTW -----------------------------------------#
 set(CMAKE_FIND_ROOT_PATH ${FFTW_DIR})
@@ -136,6 +184,7 @@ find_library(
   FFTW_LIB
 	NAMES fftw3 aslfftw3
 	DOC "Fastest Fourier Transform of the West."
+  HINTS /opt/nec/ve/nlc/1.0.0/musl/lib/ ${FFTW_DIR}/lib
   HINTS /opt/nec/ve/nlc/1.0.0/lib/ ${FFTW_DIR}/lib
 )
 
@@ -144,9 +193,11 @@ if(PARALLEL)
     FFTWMPI_LIB
 	  NAMES fftw3_mpi aslfftw3_mpi
     DOC "Distributed parallel implementation of FFTW."
+    HINTS /opt/nec/ve/nlc/1.0.0/musl/lib/ ${FFTW_DIR}/lib
     HINTS /opt/nec/ve/nlc/1.0.0/lib/ ${FFTW_DIR}/lib
   )
 endif()
+
 #end search for libraries
 
 # search for headers
@@ -162,6 +213,12 @@ find_path(
 )
 if (CMAKE_SYSTEM_NAME MATCHES "(.*)SX-Aurora")
   set (FFTW_INCLUDE /opt/nec/ve/nlc/1.0.0/include/)
+  if (NOT PARALLEL)
+    set (ASL_INCLUDE /opt/nec/ve/nlc/1.0.0/include/mod)
+  elseif (PARALLEL)
+    set (ASL_INCLUDE /opt/nec/ve/nlc/1.0.0/include/mod_mpi)
+  endif()
+  message(STATUS "ASL headers: ${ASL_INCLUDE}")
 endif()
 # end search for headers
 
@@ -191,6 +248,9 @@ include_directories(/.$(CMAKE_SOURCE_DIR)/common) #because of tap.h
 if(FFTW_INCLUDE)
   include_directories(${FFTW_INCLUDE})
 endif()
+if(ASL_INCLUDE)
+  include_directories(${ASL_INCLUDE})
+endif()
 
 foreach (p ${LIBDIRS})
   add_subdirectory (${p})
@@ -198,6 +258,12 @@ endforeach (p)
 
 add_library(fosite fosite.f90)
 target_link_libraries(fosite ${LIBDIRS})
+
+# add gsl
+if(GSL_FOUND)
+  target_link_libraries(fosite ${GSL_LIBRARIES} ${FGSL_BINARY_DIR}/lib/libfgsl.a)
+  add_dependencies(numtools fgsl)
+endif()
 
 # add fftw
 if (NOT CMAKE_SYSTEM_NAME MATCHES "(.*)SX-Aurora")

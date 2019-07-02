@@ -290,9 +290,9 @@ CONTAINS
     IF (this%Mesh%FARGO.EQ.1) THEN
        ! make sure there is valid data at least in the i-ghost cells
        CALL this%Timedisc%Boundary%CenterBoundary(this%Mesh,this%Physics,&
-                             0.0,this%Timedisc%pvar%data4d,this%Timedisc%cvar%data4d)
+                             0.0,this%Timedisc%pvar,this%Timedisc%cvar)
        CALL this%Timedisc%CalcBackgroundVelocity(this%Mesh,this%Physics, &
-                             this%Timedisc%pvar%data4d,this%Timedisc%cvar%data4d,this%Timedisc%w)
+                             this%Timedisc%pvar,this%Timedisc%cvar,this%Timedisc%w)
     END IF
 
     ! do a complete update of all data
@@ -405,7 +405,7 @@ CONTAINS
     ! write output to data file
     IF ((ABS(this%Datafile%time-this%Timedisc%time)&
             .LE.1.0E-5*this%Datafile%time).OR.&
-        this%Timedisc%break) THEN
+        this%Timedisc%break.OR.(this%Datafile%walltime.LE.this%wall_time)) THEN
        CALL this%Datafile%WriteDataset(this%Mesh,this%Physics,this%Fluxes,&
                          this%Timedisc,this%config,this%IO)
        CALL this%PrintInfo(this%Datafile%step-1, this%iter,this%Timedisc%time,&
@@ -416,6 +416,11 @@ CONTAINS
          CALL this%Warning("SolveODE", "Time step too small, aborting.",0)
          break = .True.
          RETURN
+       END IF
+
+       ! only give one additional output at before walltime
+       IF (this%Datafile%walltime.LE.this%wall_time) THEN
+         this%Datafile%walltime = HUGE(1.0)
        END IF
 
        ! reset dt_min,dtmincause and n_adj
@@ -460,10 +465,8 @@ CONTAINS
     CALL this%Timedisc%Finalize()
     DEALLOCATE(this%Timedisc)
 
-    IF (ASSOCIATED(this%Sources)) THEN
-      CALL this%Sources%Finalize()
-      DEALLOCATE(this%Sources)
-    END IF
+    CALL Destroy_Sources(this%Sources)
+
     CALL this%Physics%Finalize()
     DEALLOCATE(this%Physics)
     CALL this%Fluxes%Finalize()

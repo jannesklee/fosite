@@ -34,6 +34,9 @@
 !!
 !! \brief generic gravity terms module providing functionaly common to all
 !! gravity terms
+!!
+!! \extends sources_c_accel
+!! \ingroup sources
 !----------------------------------------------------------------------------!
 MODULE sources_gravity_mod
   USE logging_base_mod
@@ -296,8 +299,7 @@ CONTAINS
       gravptr => gravptr%next
     END DO
 
-    CALL this%Finalize_base()
-    IF(ASSOCIATED(this%next)) CALL this%next%Finalize()
+    CALL this%sources_c_accel%Finalize()
   END SUBROUTINE Finalize
 
 END MODULE sources_gravity_mod

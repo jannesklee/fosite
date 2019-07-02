@@ -87,6 +87,7 @@ MODULE gravity_pointmass_mod
     REAL, DIMENSION(:,:,:),     POINTER :: r_prim       !< distance to primary point mass
     REAL, DIMENSION(:,:,:,:),   POINTER :: fr_prim
     REAL, DIMENSION(:,:,:,:),   POINTER :: posvec_prim  !< pos. vectors from primary
+    REAL, DIMENSION(:,:,:,:),   POINTER :: posvec_prim_tmp !< tmp. pos. vectors from primary
     REAL, DIMENSION(:,:,:,:,:), POINTER :: fposvec_prim !< face pos.
     REAL, DIMENSION(:,:,:,:), POINTER   :: pot_prim     !< potential second component
     REAL, DIMENSION(:,:,:),   POINTER   :: omega        !< angular velocity
@@ -151,7 +152,8 @@ CONTAINS
              this%r_prim(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX),&
              this%fr_prim(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,3), &
              this%posvec_prim(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,3),&
-             this%fposvec_prim(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,3,Mesh%NDIMS),& ! last two entries (EAST,NORTH)x(dim1,dim2)
+             this%posvec_prim_tmp(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,3),&
+             this%fposvec_prim(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,3,3),& ! last two entries (EAST,NORTH,TOP)x(dim1,dim2,dim3)
              this%mass, this%accrate, this%massloss, this%pos(1,3), &
          STAT = err)
     IF (err.NE.0) CALL this%Error("InitGravity_pointmass", "Unable allocate memory!")
@@ -221,14 +223,15 @@ CONTAINS
        ! PLEASE NOTE: We need the shifted curvilinear components at the bary_centers and
        ! faces in EASTERN and NORTHERN direction. This is the case because we want to
        ! calculate the potential at these face positions further below.
-       this%posvec_prim(:,:,:,1) = this%pos(1,1)
-       this%posvec_prim(:,:,:,2) = this%pos(1,2)
-       this%posvec_prim(:,:,:,3) = this%pos(1,3)
+       this%posvec_prim_tmp(:,:,:,1) = this%pos(1,1)
+       this%posvec_prim_tmp(:,:,:,2) = this%pos(1,2)
+       this%posvec_prim_tmp(:,:,:,3) = this%pos(1,3)
 
-       CALL Mesh%Geometry%Convert2Curvilinear(Mesh%curv%faces(:,:,:,EAST,:),this%posvec_prim(:,:,:,:),this%fposvec_prim(:,:,:,1,:))
-       CALL Mesh%Geometry%Convert2Curvilinear(Mesh%curv%faces(:,:,:,NORTH,:),this%posvec_prim(:,:,:,:),this%fposvec_prim(:,:,:,2,:))
-       CALL Mesh%Geometry%Convert2Curvilinear(Mesh%curv%faces(:,:,:,TOP,:),this%posvec_prim(:,:,:,:),this%fposvec_prim(:,:,:,3,:))
-       CALL Mesh%Geometry%Convert2Curvilinear(Mesh%bcenter,this%posvec_prim,this%posvec_prim)
+       CALL Mesh%Geometry%Convert2Curvilinear(Mesh%curv%faces(:,:,:,EAST,:),this%posvec_prim_tmp(:,:,:,:),this%fposvec_prim(:,:,:,1,:))
+       CALL Mesh%Geometry%Convert2Curvilinear(Mesh%curv%faces(:,:,:,NORTH,:),this%posvec_prim_tmp(:,:,:,:),this%fposvec_prim(:,:,:,2,:))
+       CALL Mesh%Geometry%Convert2Curvilinear(Mesh%curv%faces(:,:,:,TOP,:),this%posvec_prim_tmp(:,:,:,:),this%fposvec_prim(:,:,:,3,:))
+
+       CALL Mesh%Geometry%Convert2Curvilinear(Mesh%bcenter,this%posvec_prim_tmp,this%posvec_prim)
 
        ! subtract the result from the position vector:
        ! this gives you the curvilinear components of all vectors pointing
@@ -236,7 +239,7 @@ CONTAINS
        this%posvec_prim(:,:,:,:) = Mesh%posvec%bcenter(:,:,:,:) - this%posvec_prim(:,:,:,:)
        this%fposvec_prim(:,:,:,1,:) = Mesh%posvec%faces(:,:,:,EAST,:) - this%fposvec_prim(:,:,:,1,:)  ! EAST
        this%fposvec_prim(:,:,:,2,:) = Mesh%posvec%faces(:,:,:,NORTH,:) - this%fposvec_prim(:,:,:,2,:) ! NORTH
-       this%fposvec_prim(:,:,:,2,:) = Mesh%posvec%faces(:,:,:,TOP,:) - this%fposvec_prim(:,:,:,3,:)   ! TOP
+       this%fposvec_prim(:,:,:,3,:) = Mesh%posvec%faces(:,:,:,TOP,:) - this%fposvec_prim(:,:,:,3,:)   ! TOP
 
        this%r_prim(:,:,:) = SQRT(this%posvec_prim(:,:,:,1)**2+this%posvec_prim(:,:,:,2)**2+this%posvec_prim(:,:,:,3)**2)
        this%fr_prim(:,:,:,1) = SQRT(this%fposvec_prim(:,:,:,1,1)**2+this%fposvec_prim(:,:,:,1,2)**2+this%fposvec_prim(:,:,:,1,3)**2) ! shifted EAST-faces
@@ -271,6 +274,9 @@ CONTAINS
 
     !! \todo implement computation for pseudo-Newton Paczynski-Wiita potential
     CALL this%CalcPotential(Mesh,Physics,this%mass,this%r_prim,this%fr_prim,this%pot)
+
+
+    CALL this%SetOutput(Mesh,Physics,config,IO)
 
     ! enable mass accretion by setting "outbound" to one of the four boundaries
     ! of the computational domain (depends on mesh geometry)
@@ -437,7 +443,8 @@ CONTAINS
     END IF
 
     DEALLOCATE(this%pot,this%omega,this%omega2,this%r_prim,this%fr_prim, &
-               this%posvec_prim,this%fposvec_prim,this%mass,this%accrate,this%massloss,this%pos)
+               this%posvec_prim,this%posvec_prim_tmp,this%fposvec_prim,this%mass, &
+               this%accrate,this%massloss,this%pos)
 
     DEALLOCATE(this%potential)
 

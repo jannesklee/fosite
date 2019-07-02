@@ -59,7 +59,7 @@ MODULE marray_base_mod
   END TYPE selection_base
   !> basic mesh array class
   TYPE :: marray_base
-    INTEGER       :: RANK = 0,DIMS(2) = 0
+    INTEGER       :: RANK = -1,DIMS(2) = 0
     REAL, POINTER, CONTIGUOUS :: data1d(:) => null()
     REAL, POINTER, CONTIGUOUS :: data2d(:,:) => null()
     REAL, POINTER, CONTIGUOUS :: data3d(:,:,:) => null()
@@ -118,6 +118,8 @@ MODULE marray_base_mod
     TYPE(marray_base) :: new_ma
     INTEGER, OPTIONAL, INTENT(IN) :: m,n
     !-------------------------------------------------------------------!
+    INTEGER :: err
+    !-------------------------------------------------------------------!
     IF (IDX_INIT) THEN
       IF (PRESENT(m)) THEN
         new_ma%DIMS(1) = m
@@ -132,8 +134,6 @@ MODULE marray_base_mod
         new_ma%DIMS(:) = 1
         new_ma%RANK = 0
       END IF
-      ALLOCATE(new_ma%data1d(INUM*JNUM*KNUM*new_ma%DIMS(1)*new_ma%DIMS(2)))
-      CALL new_ma%AssignPointers()
     END IF
   END FUNCTION CreateMArray
   
@@ -253,6 +253,8 @@ MODULE marray_base_mod
     CLASS(marray_base),INTENT(INOUT) :: this
     CLASS(marray_base),INTENT(IN)    :: ma
     !------------------------------------------------------------------------!
+    INTEGER :: err
+    !------------------------------------------------------------------------!
     IF (ASSOCIATED(ma%data1d)) THEN
       ! copy meta data
       this%RANK    = ma%RANK
@@ -262,7 +264,11 @@ MODULE marray_base_mod
           ! this%data1d allocated with size zero
           DEALLOCATE(this%data1d)
           ! allocate and assign data
-          ALLOCATE(this%data1d(SIZE(ma%data1d,1)),SOURCE=ma%data1d)
+          ALLOCATE(this%data1d(SIZE(ma%data1d,1)),SOURCE=ma%data1d,STAT=err)
+          IF (err.NE.0) THEN
+            PRINT *,"ERROR in marray_base::AssignMArray_0: memory allocation failed"
+            STOP 1
+          END IF
         ELSE IF (SIZE(this%data1d).EQ.SIZE(ma%data1d)) THEN
           ! just copy the data
           this%data1d(:) = ma%data1d(:)
@@ -272,8 +278,22 @@ MODULE marray_base_mod
           STOP 1
         END IF
       ELSE
-        ! allocate and assign data
-        ALLOCATE(this%data1d(SIZE(ma%data1d,1)),SOURCE=ma%data1d)
+        ! allocate and copy data
+        ALLOCATE(this%data1d(SIZE(ma%data1d,1)),SOURCE=ma%data1d,STAT=err)
+        IF (err.NE.0) THEN
+          PRINT *,"ERROR in marray_base::AssignMArray_0: memory allocation failed"
+          STOP 1
+        END IF
+      END IF
+      CALL this%AssignPointers()
+    ELSE IF ((.NOT.ASSOCIATED(ma%data1d)).AND.(ma%RANK.GE.0)) THEN
+      this%RANK    = ma%RANK
+      this%DIMS(:) = ma%DIMS(:)
+      ! just allocate data of newly created marray without copying
+      ALLOCATE(this%data1d(INUM*JNUM*KNUM*this%DIMS(1)*this%DIMS(2)),STAT=err)
+      IF (err.NE.0) THEN
+        PRINT *,"ERROR in marray_base::AssignMArray_0: memory allocation failed"
+        STOP 1
       END IF
       CALL this%AssignPointers()
     ELSE IF (ASSOCIATED(this%data1d)) THEN
@@ -498,9 +518,15 @@ MODULE marray_base_mod
     TYPE(selection_base) :: new_sel
     INTEGER, OPTIONAL    :: idx(6)
     !-------------------------------------------------------------------!
+    INTEGER :: err
+    !-------------------------------------------------------------------!
     IF (IDX_INIT) THEN
       ! allocate 1D mask array
-      ALLOCATE(new_sel%mask3d(IGMIN:IGMAX,JGMIN:JGMAX,KGMIN:KGMAX))
+      ALLOCATE(new_sel%mask3d(IGMIN:IGMAX,JGMIN:JGMAX,KGMIN:KGMAX),STAT=err)
+      IF (err.NE.0) THEN
+        PRINT *,"ERROR in marray_base::CreateSelection: memory allocation failed"
+        STOP 1
+      END IF
       ! create 2D & 3D pointers into the 1D mask array
       new_sel%mask1d(1:INUM*JNUM*KNUM) => new_sel%mask3d
       new_sel%mask2d(1:INUM*JNUM,KGMIN:KGMAX) => new_sel%mask3d

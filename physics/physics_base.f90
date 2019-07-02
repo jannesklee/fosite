@@ -119,29 +119,17 @@ MODULE physics_base_mod
     PROCEDURE (ExternalSources),              DEFERRED :: ExternalSources
     PROCEDURE (EnableOutput),                 DEFERRED :: EnableOutput
     !------Convert2Primitve--------!
-    PROCEDURE (Convert2Primitive_new),        DEFERRED :: Convert2Primitive_new
-    PROCEDURE (Convert2Primitive_center),     DEFERRED :: Convert2Primitive_center
-    PROCEDURE (Convert2Primitive_centsub),    DEFERRED :: Convert2Primitive_centsub
-    PROCEDURE (Convert2Primitive_faces),      DEFERRED :: Convert2Primitive_faces
-    PROCEDURE (Convert2Primitive_facesub),    DEFERRED :: Convert2Primitive_facesub
+    PROCEDURE (Convert2Primitive_all),        DEFERRED :: Convert2Primitive_all
+    PROCEDURE (Convert2Primitive_subset),     DEFERRED :: Convert2Primitive_subset
     GENERIC   :: Convert2Primitive => &
-                   Convert2Primitive_new, &
-                   Convert2Primitive_center, &
-                   Convert2Primitive_centsub, &
-                   Convert2Primitive_faces, &
-                   Convert2Primitive_facesub
+                   Convert2Primitive_all, &
+                   Convert2Primitive_subset
     !------Convert2Conservative----!
-    PROCEDURE (Convert2Conservative_new),     DEFERRED :: Convert2Conservative_new
-    PROCEDURE (Convert2Conservative_center),  DEFERRED :: Convert2Conservative_center
-    PROCEDURE (Convert2Conservative_centsub), DEFERRED :: Convert2Conservative_centsub
-    PROCEDURE (Convert2Conservative_faces),   DEFERRED :: Convert2Conservative_faces
-    PROCEDURE (Convert2Conservative_facesub), DEFERRED :: Convert2Conservative_facesub
+    PROCEDURE (Convert2Conservative_all),     DEFERRED :: Convert2Conservative_all
+    PROCEDURE (Convert2Conservative_subset),  DEFERRED :: Convert2Conservative_subset
     GENERIC   :: Convert2Conservative => &
-                   Convert2Conservative_new, &
-                   Convert2Conservative_center, &
-                   Convert2Conservative_centsub, &
-                   Convert2Conservative_faces, &
-                   Convert2Conservative_facesub
+                   Convert2Conservative_all, &
+                   Convert2Conservative_subset
     !------Wavespeed Routines-----!
     PROCEDURE (CalcWaveSpeeds_center),        DEFERRED :: CalcWaveSpeeds_center
     PROCEDURE (CalcWaveSpeeds_faces),         DEFERRED :: CalcWaveSpeeds_faces
@@ -162,31 +150,24 @@ MODULE physics_base_mod
     PROCEDURE (SubtractBackgroundVelocityY),  DEFERRED :: SubtractBackgroundVelocityY
     PROCEDURE (AddBackgroundVelocityZ),       DEFERRED :: AddBackgroundVelocityZ
     PROCEDURE (SubtractBackgroundVelocityZ),  DEFERRED :: SubtractBackgroundVelocityZ
-    PROCEDURE (FargoSources),                 DEFERRED :: FargoSources
+    PROCEDURE (AddFargoSources),              DEFERRED :: AddFargoSources
     !------Geometry Routines-------!
     PROCEDURE (GeometricalSources),           DEFERRED :: GeometricalSources
     PROCEDURE (Masks),                        DEFERRED :: ReflectionMasks
     PROCEDURE (Masks),                        DEFERRED :: AxisMasks
-
-! these routines are only necessary for special boundaries, fluxes
-   PROCEDURE   (CalculateCharSystemX), DEFERRED :: CalculateCharSystemX
-   PROCEDURE   (CalculateCharSystemY), DEFERRED :: CalculateCharSystemY
-   PROCEDURE   (CalculateCharSystemZ), DEFERRED :: CalculateCharSystemZ
-   PROCEDURE   (CalculateBoundaryDataX), DEFERRED :: CalculateBoundaryDataX
-   PROCEDURE   (CalculateBoundaryDataY), DEFERRED :: CalculateBoundaryDataY
-   PROCEDURE   (CalculateBoundaryDataZ), DEFERRED :: CalculateBoundaryDataZ
-   GENERIC   :: CalcCharSystemX => CalculateCharSystemX
-   GENERIC   :: CalcCharSystemY => CalculateCharSystemY
-   GENERIC   :: CalcCharSystemZ => CalculateCharSystemZ
-   GENERIC   :: CalcBoundaryDataX => CalculateBoundaryDataX
-   GENERIC   :: CalcBoundaryDataY => CalculateBoundaryDataY
-   GENERIC   :: CalcBoundaryDataZ => CalculateBoundaryDataZ
+    !------Boundary Conditions-----!
+    ! absorbing boundaries
+    PROCEDURE (CalculateCharSystemX),        DEFERRED :: CalculateCharSystemX
+    PROCEDURE (CalculateCharSystemY),        DEFERRED :: CalculateCharSystemY
+    PROCEDURE (CalculateCharSystemZ),        DEFERRED :: CalculateCharSystemZ
+    PROCEDURE (CalculateBoundaryDataX),      DEFERRED :: CalculateBoundaryDataX
+    PROCEDURE (CalculateBoundaryDataY),      DEFERRED :: CalculateBoundaryDataY
+    PROCEDURE (CalculateBoundaryDataZ),      DEFERRED :: CalculateBoundaryDataZ
+    ! far field boundaries
 !   PROCEDURE ::  CalculatePrim2RiemannX
 !   PROCEDURE ::  CalculatePrim2RiemannY
 !   PROCEDURE ::  CalculateRiemann2PrimX
 !   PROCEDURE ::  CalculateRiemann2PrimY
-   PROCEDURE (CalcStresses_euler),       DEFERRED :: CalcStresses_euler
-   PROCEDURE (ViscositySources),             DEFERRED :: ViscositySources
 !   PROCEDURE ::  SGSSources
 !   PROCEDURE ::  CalculateSGSTensor
 !   PROCEDURE :: GetSoundSpeed_adiabatic
@@ -211,91 +192,27 @@ MODULE physics_base_mod
       CLASS(marray_compound), POINTER :: new_sv
       INTEGER, OPTIONAL, INTENT(IN)   :: flavour,num
     END SUBROUTINE
-    PURE SUBROUTINE Convert2Primitive_new(this,cvar,pvar)
+    PURE SUBROUTINE Convert2Primitive_all(this,cvar,pvar)
       IMPORT physics_base, marray_compound
       CLASS(physics_base), INTENT(IN)  :: this
       CLASS(marray_compound), INTENT(INOUT) :: cvar,pvar
     END SUBROUTINE
-    PURE SUBROUTINE Convert2Primitive_center(this,Mesh,cvar,pvar)
-      IMPORT physics_base, mesh_base
+    PURE SUBROUTINE Convert2Primitive_subset(this,i1,i2,j1,j2,k1,k2,cvar,pvar)
+      IMPORT physics_base, marray_compound
       CLASS(physics_base), INTENT(IN)  :: this
-      CLASS(mesh_base),    INTENT(IN)  :: Mesh
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%vnum), &
-                           INTENT(IN)  :: cvar
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%vnum), &
-                           INTENT(OUT) :: pvar
-    END SUBROUTINE
-    PURE SUBROUTINE Convert2Primitive_centsub(this,Mesh,i1,i2,j1,j2,k1,k2,cvar,pvar)
-      IMPORT physics_base, mesh_base
-      CLASS(physics_base), INTENT(IN)  :: this
-      CLASS(mesh_base),    INTENT(IN)  :: Mesh
       INTEGER,             INTENT(IN)  :: i1,i2,j1,j2,k1,k2
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%vnum), &
-                           INTENT(IN)  :: cvar
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%vnum), &
-                           INTENT(OUT) :: pvar
+      CLASS(marray_compound), INTENT(INOUT) :: cvar,pvar
     END SUBROUTINE
-    PURE SUBROUTINE Convert2Primitive_faces(this,Mesh,cons,prim)
-      IMPORT physics_base, mesh_base
-      CLASS(physics_base), INTENT(IN)  :: this
-      CLASS(mesh_base),    INTENT(IN)  :: Mesh
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%nfaces,this%vnum), &
-                           INTENT(IN)  :: cons
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%nfaces,this%vnum), &
-                           INTENT(OUT) :: prim
-    END SUBROUTINE
-    PURE SUBROUTINE Convert2Primitive_facesub(this,Mesh,i1,i2,j1,j2,k1,k2,cons,prim)
-      IMPORT physics_base, mesh_base
-      CLASS(physics_base), INTENT(IN)  :: this
-      CLASS(mesh_base),    INTENT(IN)  :: Mesh
-      INTEGER,             INTENT(IN)  :: i1,i2,j1,j2,k1,k2
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%nfaces,this%vnum), &
-                           INTENT(IN)  :: cons
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%nfaces,this%vnum), &
-                           INTENT(OUT) :: prim
-    END SUBROUTINE
-    PURE SUBROUTINE Convert2Conservative_new(this,pvar,cvar)
+    PURE SUBROUTINE Convert2Conservative_all(this,pvar,cvar)
       IMPORT physics_base, marray_compound
       CLASS(physics_base), INTENT(IN)  :: this
       CLASS(marray_compound), INTENT(INOUT) :: pvar,cvar
     END SUBROUTINE
-    PURE SUBROUTINE Convert2Conservative_center(this,Mesh,pvar,cvar)
-      IMPORT physics_base, mesh_base
+    PURE SUBROUTINE Convert2Conservative_subset(this,i1,i2,j1,j2,k1,k2,pvar,cvar)
+      IMPORT physics_base, marray_compound
       CLASS(physics_base), INTENT(IN)  :: this
-      CLASS(mesh_base),    INTENT(IN)  :: Mesh
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%vnum), &
-                           INTENT(IN)  :: pvar
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%vnum), &
-                           INTENT(OUT) :: cvar
-    END SUBROUTINE
-    PURE SUBROUTINE Convert2Conservative_centsub(this,Mesh,i1,i2,j1,j2,k1,k2,pvar,cvar)
-      IMPORT physics_base, mesh_base
-      CLASS(physics_base), INTENT(IN)  :: this
-      CLASS(mesh_base),    INTENT(IN)  :: Mesh
       INTEGER,             INTENT(IN)  :: i1,i2,j1,j2,k1,k2
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%vnum), &
-                           INTENT(IN)  :: pvar
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%vnum), &
-                           INTENT(OUT) :: cvar
-    END SUBROUTINE
-    PURE SUBROUTINE Convert2Conservative_faces(this,Mesh,prim,cons)
-      IMPORT physics_base, mesh_base
-      CLASS(physics_base), INTENT(IN)  :: this
-      CLASS(mesh_base),    INTENT(IN)  :: Mesh
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%nfaces,this%vnum), &
-                           INTENT(IN)  :: prim
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%nfaces,this%vnum), &
-                           INTENT(OUT) :: cons
-    END SUBROUTINE
-    PURE SUBROUTINE Convert2Conservative_facesub(this,Mesh,i1,i2,j1,j2,k1,k2,prim,cons)
-      IMPORT physics_base, mesh_base
-      CLASS(physics_base), INTENT(IN)  :: this
-      CLASS(mesh_base),    INTENT(IN)  :: Mesh
-      INTEGER,             INTENT(IN)  :: i1,i2,j1,j2,k1,k2
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%nfaces,this%vnum), &
-                           INTENT(IN)  :: prim
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,Mesh%nfaces,this%vnum), &
-                           INTENT(OUT) :: cons
+      CLASS(marray_compound), INTENT(INOUT) :: pvar,cvar
     END SUBROUTINE
     PURE SUBROUTINE ExternalSources(this,accel,pvar,cvar,sterm)
       IMPORT physics_base, mesh_base, marray_base, marray_compound
@@ -340,58 +257,52 @@ MODULE physics_base_mod
       CLASS(marray_compound), INTENT(INOUT) :: prim,cons,zfluxes
     END SUBROUTINE
     PURE SUBROUTINE AddBackgroundVelocityX(this,Mesh,w,pvar,cvar)
-      IMPORT physics_base,mesh_base
+      IMPORT physics_base,mesh_base,marray_compound
       CLASS(physics_base), INTENT(INOUT) :: this
       CLASS(mesh_base),    INTENT(IN)    :: Mesh
       REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX), &
                            INTENT(IN)    :: w
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                           INTENT(INOUT) ::  pvar,cvar
+      CLASS(marray_compound), INTENT(INOUT) ::  pvar,cvar
     END SUBROUTINE AddBackgroundVelocityX
     PURE SUBROUTINE AddBackgroundVelocityY(this,Mesh,w,pvar,cvar)
-      IMPORT physics_base,mesh_base
+      IMPORT physics_base,mesh_base,marray_compound
       CLASS(physics_base), INTENT(INOUT) :: this
       CLASS(mesh_base),    INTENT(IN)    :: Mesh
       REAL, DIMENSION(Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX), &
                            INTENT(IN)    :: w
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                           INTENT(INOUT) ::  pvar,cvar
+      CLASS(marray_compound), INTENT(INOUT) ::  pvar,cvar
     END SUBROUTINE AddBackgroundVelocityY
     PURE SUBROUTINE AddBackgroundVelocityZ(this,Mesh,w,pvar,cvar)
-      IMPORT physics_base,mesh_base
+      IMPORT physics_base,mesh_base,marray_compound
       CLASS(physics_base), INTENT(INOUT) :: this
       CLASS(mesh_base),    INTENT(IN)    :: Mesh
       REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX), &
                            INTENT(IN)    :: w
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                           INTENT(INOUT) ::  pvar,cvar
+      CLASS(marray_compound), INTENT(INOUT) ::  pvar,cvar
     END SUBROUTINE AddBackgroundVelocityZ
     PURE SUBROUTINE SubtractBackgroundVelocityX(this,Mesh,w,pvar,cvar)
-      IMPORT physics_base,mesh_base
+      IMPORT physics_base,mesh_base,marray_compound
       CLASS(physics_base), INTENT(INOUT) :: this
       CLASS(mesh_base),    INTENT(IN)    :: Mesh
       REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX), &
                            INTENT(IN)    :: w
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                           INTENT(INOUT) ::  pvar,cvar
+      CLASS(marray_compound), INTENT(INOUT) ::  pvar,cvar
     END SUBROUTINE SubtractBackgroundVelocityX
     PURE SUBROUTINE SubtractBackgroundVelocityY(this,Mesh,w,pvar,cvar)
-      IMPORT physics_base,mesh_base
+      IMPORT physics_base,mesh_base,marray_compound
       CLASS(physics_base), INTENT(INOUT) :: this
       CLASS(mesh_base),    INTENT(IN)    :: Mesh
       REAL, DIMENSION(Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX), &
                            INTENT(IN)    :: w
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                           INTENT(INOUT) ::  pvar,cvar
+      CLASS(marray_compound), INTENT(INOUT) ::  pvar,cvar
     END SUBROUTINE SubtractBackgroundVelocityY
     PURE SUBROUTINE SubtractBackgroundVelocityZ(this,Mesh,w,pvar,cvar)
-      IMPORT physics_base,mesh_base
+      IMPORT physics_base,mesh_base,marray_compound
       CLASS(physics_base), INTENT(INOUT) :: this
       CLASS(mesh_base),    INTENT(IN)    :: Mesh
       REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX), &
                            INTENT(IN)    :: w
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                           INTENT(INOUT) ::  pvar,cvar
+      CLASS(marray_compound), INTENT(INOUT) ::  pvar,cvar
     END SUBROUTINE SubtractBackgroundVelocityZ
     PURE SUBROUTINE GeometricalSources(this,Mesh,pvar,cvar,sterm)
       IMPORT physics_base,mesh_base,marray_compound
@@ -399,116 +310,73 @@ MODULE physics_base_mod
       CLASS(mesh_base),    INTENT(IN)    :: Mesh
       CLASS(marray_compound), INTENT(INOUT) :: pvar,cvar,sterm
     END SUBROUTINE
-    PURE SUBROUTINE FargoSources(this,Mesh,w,pvar,cvar,sterm)
-      IMPORT physics_base,mesh_base
+    PURE SUBROUTINE AddFargoSources(this,Mesh,w,pvar,cvar,sterm)
+      IMPORT physics_base,mesh_base,marray_compound
       CLASS(physics_base), INTENT(IN)    :: this
       CLASS(mesh_base),    INTENT(IN)    :: Mesh
       REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX), &
                            INTENT(IN)    :: w
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                           INTENT(IN)    :: pvar,cvar
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM+this%PNUM), &
-                           INTENT(INOUT) :: sterm
-    END SUBROUTINE FargoSources
+      CLASS(marray_compound), INTENT(INOUT) :: pvar,cvar,sterm
+    END SUBROUTINE AddFargoSources
     PURE SUBROUTINE Masks(this,Mesh,reflX,reflY,reflZ)
       IMPORT physics_base, mesh_base
       CLASS(physics_base),           INTENT(IN)  :: this
       CLASS(mesh_base),              INTENT(IN)  :: Mesh       
       LOGICAL, DIMENSION(this%VNUM), INTENT(OUT) :: reflX,reflY,reflZ
     END SUBROUTINE
-    PURE SUBROUTINE CalcStresses_euler(this,Mesh,pvar,dynvis,bulkvis, &
-         btxx,btxy,btxz,btyy,btyz,btzz)
-      IMPORT physics_base, mesh_base
-      !------------------------------------------------------------------------!
-      CLASS(Physics_base),INTENT(INOUT) :: this
-      CLASS(Mesh_base),INTENT(IN)       :: Mesh
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) :: pvar
-      REAL, DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX) :: &
-           dynvis,bulkvis,btxx,btxy,btxz,btyy,btyz,btzz
-      !------------------------------------------------------------------------!
-      INTENT(IN)        :: pvar,dynvis,bulkvis
-      INTENT(OUT)       :: btxx,btxy,btxz,btyy,btyz,btzz
-    END SUBROUTINE
-    PURE SUBROUTINE ViscositySources(this,Mesh,pvar,btxx,btxy,btxz,btyy,btyz,btzz,sterm)
-      IMPORT physics_base, mesh_base
-      !------------------------------------------------------------------------!
-      CLASS(physics_base), INTENT(INOUT) :: this
-      CLASS(mesh_base),       INTENT(IN)    :: Mesh
-      REAL,                   INTENT(IN), &
-        DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) &
-                                            :: pvar
-      REAL,                   INTENT(IN), &
-        DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX) &
-                                            :: btxx,btxy,btyy,btyz,btzz,btxz
-      REAL,                   INTENT(OUT), &
-        DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) &
-                                            :: sterm
-    END SUBROUTINE
-    PURE SUBROUTINE CalculateCharSystemX(this,Mesh,i,dir,pvar,lambda,xvar)
-      IMPORT physics_base, mesh_base
+    PURE SUBROUTINE CalculateCharSystemX(this,Mesh,i1,i2,pvar,lambda,xvar)
+      IMPORT physics_base, mesh_base, marray_compound
       !----------------------------------------------------------------------!
-      CLASS(physics_base), INTENT(IN) :: this
+      CLASS(physics_base),    INTENT(IN)    :: this
       CLASS(mesh_base),       INTENT(IN)    :: Mesh
-      INTEGER,                INTENT(IN)    :: i,dir
-      REAL,                   INTENT(IN), &
-        DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) &
-                                            :: pvar
-      REAL,DIMENSION(Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM), INTENT(OUT) :: lambda
-      REAL,DIMENSION(Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM), INTENT(OUT)   :: xvar
+      INTEGER,                INTENT(IN)    :: i1,i2
+      CLASS(marray_compound), INTENT(INOUT) :: pvar
+      REAL,DIMENSION(Mesh%JMIN:Mesh%JMAX,Mesh%KMIN:Mesh%KMAX,this%VNUM), &
+                              INTENT(OUT)   :: lambda,xvar
    END SUBROUTINE
-   PURE SUBROUTINE CalculateCharSystemY(this,Mesh,j,dir,pvar,lambda,xvar)
-      IMPORT physics_base, mesh_base
+   PURE SUBROUTINE CalculateCharSystemY(this,Mesh,j1,j2,pvar,lambda,xvar)
+      IMPORT physics_base, mesh_base, marray_compound
       !----------------------------------------------------------------------!
-      CLASS(physics_base), INTENT(IN) :: this
+      CLASS(physics_base),    INTENT(IN)    :: this
       CLASS(mesh_base),       INTENT(IN)    :: Mesh
-      INTEGER,                INTENT(IN)    :: j,dir
-      REAL,                   INTENT(IN), &
-        DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) &
-                                            :: pvar
-      REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM), INTENT(OUT) :: lambda
-      REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM), INTENT(OUT)   :: xvar
+      INTEGER,                INTENT(IN)    :: j1,j2
+      CLASS(marray_compound), INTENT(INOUT) :: pvar
+      REAL,DIMENSION(Mesh%IMIN:Mesh%IMAX,Mesh%KMIN:Mesh%KMAX,this%VNUM), &
+                              INTENT(OUT)   :: lambda,xvar
    END SUBROUTINE
-   PURE SUBROUTINE CalculateCharSystemZ(this,Mesh,k,dir,pvar,lambda,xvar)
-      IMPORT physics_base, mesh_base
+   PURE SUBROUTINE CalculateCharSystemZ(this,Mesh,k1,k2,pvar,lambda,xvar)
+      IMPORT physics_base, mesh_base, marray_compound
       !----------------------------------------------------------------------!
-      CLASS(physics_base), INTENT(IN) :: this
+      CLASS(physics_base),    INTENT(IN)    :: this
       CLASS(mesh_base),       INTENT(IN)    :: Mesh
-      INTEGER,                INTENT(IN) :: k,dir
-      REAL,                   INTENT(IN), &
-        DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) &
-                                            :: pvar
-      REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,this%VNUM), INTENT(OUT) :: lambda
-      REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,this%VNUM), INTENT(OUT)   :: xvar
+      INTEGER,                INTENT(IN)    :: k1,k2
+      CLASS(marray_compound), INTENT(INOUT) :: pvar
+      REAL,DIMENSION(Mesh%IMIN:Mesh%IMAX,Mesh%JMIN:Mesh%JMAX,this%VNUM), &
+                              INTENT(OUT)   :: lambda,xvar
    END SUBROUTINE
-   PURE SUBROUTINE CalculateBoundaryDataX(this,Mesh,i1,dir,xvar,pvar)
-      IMPORT physics_base, mesh_base
+   PURE SUBROUTINE CalculateBoundaryDataX(this,Mesh,i1,i2,xvar,pvar)
+      IMPORT physics_base, mesh_base, marray_compound
      CLASS(physics_base), INTENT(IN)    :: this
      CLASS(mesh_base),       INTENT(IN)    :: Mesh
-     INTEGER,                INTENT(IN)    :: i1,dir
-     REAL,                   INTENT(INOUT), &
-        DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) &
-                                            :: pvar
+     INTEGER,                INTENT(IN)    :: i1,i2
      REAL,DIMENSION(Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM), INTENT(IN)   :: xvar
+     CLASS(marray_compound), INTENT(INOUT) :: pvar
    END SUBROUTINE
-   PURE SUBROUTINE CalculateBoundaryDataY(this,Mesh,j1,dir,xvar,pvar)
-      IMPORT physics_base, mesh_base
+   PURE SUBROUTINE CalculateBoundaryDataY(this,Mesh,j1,j2,xvar,pvar)
+      IMPORT physics_base, mesh_base, marray_compound
      CLASS(physics_base), INTENT(IN)    :: this
      CLASS(mesh_base),       INTENT(IN)    :: Mesh
-     INTEGER,                 INTENT(IN)   :: j1,dir
-     REAL,                   INTENT(INOUT), &
-        DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) &
-                                            :: pvar
+     INTEGER,                 INTENT(IN)   :: j1,j2
      REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM), INTENT(IN)   :: xvar
+     CLASS(marray_compound), INTENT(INOUT) :: pvar
    END SUBROUTINE
-   PURE SUBROUTINE CalculateBoundaryDataZ(this,Mesh,k1,dir,xvar,pvar)
-      IMPORT physics_base, mesh_base
+   PURE SUBROUTINE CalculateBoundaryDataZ(this,Mesh,k1,k2,xvar,pvar)
+      IMPORT physics_base, mesh_base, marray_compound
      CLASS(physics_base), INTENT(IN)    :: this
      CLASS(mesh_base),       INTENT(IN)    :: Mesh
-     INTEGER,                INTENT(IN)    :: k1,dir
-     REAL,                   INTENT(INOUT), &
-        DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,Mesh%KGMIN:Mesh%KGMAX,this%VNUM) &
-                                            :: pvar
+     INTEGER,                INTENT(IN)    :: k1,k2
      REAL,DIMENSION(Mesh%IGMIN:Mesh%IGMAX,Mesh%JGMIN:Mesh%JGMAX,this%VNUM), INTENT(IN)   :: xvar
+     CLASS(marray_compound), INTENT(INOUT) :: pvar
    END SUBROUTINE
    SUBROUTINE Finalize(this)
      IMPORT physics_base
@@ -633,21 +501,10 @@ CONTAINS
     this%tmp4(:,:,:) = 0.
     this%tmp5(:,:,:) = 0.
 
-   ! enable/disable absorbing and farfield boundary conditions
-   ! TODO Not yet tested for 3D
-   SELECT CASE(problem)
-!    CASE()
-!       this%supports_absorbing = .TRUE.
-    CASE DEFAULT
-       this%supports_absorbing = .FALSE.
-    END SELECT
-    SELECT CASE(problem)
-!    CASE()
-!       this%supports_farfield  = .TRUE.
-    CASE DEFAULT
-       this%supports_farfield  = .FALSE.
-    END SELECT
-
+    ! disable absorbing and farfield boundary conditions by default
+    this%supports_absorbing = .FALSE.
+    this%supports_farfield  = .FALSE.
+ 
     ! no background velocity subtracted (important for fargo advection)
     this%transformed_xvelocity = .FALSE.
     this%transformed_yvelocity = .FALSE.
